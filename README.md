@@ -123,7 +123,6 @@ make scenario-20ues
 make compare
 ```
 
-## Structure
 free5gc-cicd/
 ├── start-free5gc.sh          # Démarrage complet du système
 ├── start-minikube.sh         # Démarrage Minikube
