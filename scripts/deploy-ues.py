@@ -103,6 +103,28 @@ def deploy_ue(index, template, dry_run=False):
     if r.returncode == 0: print("OK"); return True
     print(f"ERREUR\n    {r.stderr.strip()}"); return False
 
+
+def get_mongo_pod():
+    r = kubectl("get","pod","-n",NAMESPACE,
+                "-l","app.kubernetes.io/name=mongodb",
+                "-o","jsonpath={.items[0].metadata.name}", check=False)
+    return r.stdout.strip()
+
+def mongosh(pod, eval_str):
+    return kubectl("exec","-n",NAMESPACE,pod,"--",
+                   "mongosh","free5gc","--quiet","--eval",eval_str, check=False)
+
+def release_session(index, mongo_pod):
+    """Supprimer les sessions PDU de cet UE dans MongoDB."""
+    imsi = f"imsi-20893{index:010d}"
+    collections = [
+        "subscriptionData.contextData.amf3gppAccess",
+        "subscriptionData.authenticationData.authenticationStatus",
+    ]
+    for coll in collections:
+        mongosh(mongo_pod, f"db['{coll}'].deleteOne({{ueId:'{imsi}'}})")
+    print(f"    session MongoDB libérée pour {imsi}")
+
 def delete_ue(index, dry_run=False):
     name = f"ueransim-ue-{index:03d}"
     print(f"  -> Delete {name}...", end=" ", flush=True)
@@ -111,7 +133,12 @@ def delete_ue(index, dry_run=False):
     kubectl("delete","configmap",f"free5gc-free5gc-ueransim-ue-{index:03d}-configmap",
             "-n",NAMESPACE, check=False)
     r = kubectl("delete","deployment",name,"-n",NAMESPACE, check=False)
-    if r.returncode == 0: print("OK"); return True
+    if r.returncode == 0:
+        print("OK")
+        mongo_pod = get_mongo_pod()
+        if mongo_pod:
+            release_session(index, mongo_pod)
+        return True
     if "not found" in r.stderr: print("(deja supprime)"); return True
     print(f"ERREUR\n    {r.stderr.strip()}"); return False
 
