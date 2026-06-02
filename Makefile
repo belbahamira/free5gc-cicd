@@ -57,10 +57,22 @@ scenario-20ues: setup check-prometheus
 	python3 $(SCRIPTS)/deploy-ues.py --count 16 --start 6 --timeout 300
 	@echo "[INFO] Attente etablissement PDU sessions (60s)..."
 	sleep 60
-	python3 $(SCRIPTS)/traffic-gen.py --ues 20 --duration $(DURATION) --pps 200 --size 1400 &
-	python3 $(SCRIPTS)/metrics-collector.py --scenario 20ues --duration $(DURATION) --interval $(INTERVAL) --output $(RESULTS)/scenario-20ues.csv --prometheus $(PROMETHEUS)
+	python3 $(SCRIPTS)/traffic-gen.py --ues 20 --duration 300 --pps 200 --size 1400 &
+	python3 $(SCRIPTS)/metrics-collector.py --scenario 20ues --duration 300 --interval $(INTERVAL) --output $(RESULTS)/scenario-20ues.csv --prometheus $(PROMETHEUS) &
+	@echo "[INFO] Scale-down progressif..."
+	sleep 60
+	@echo "[INFO] Suppression 4 UEs (018-021)..."
+	python3 $(SCRIPTS)/deploy-ues.py --delete --start 18 --count 4
+	sleep 45
+	@echo "[INFO] Suppression 4 UEs (014-017)..."
+	python3 $(SCRIPTS)/deploy-ues.py --delete --start 14 --count 4
+	sleep 45
+	@echo "[INFO] Suppression 4 UEs (010-013)..."
+	python3 $(SCRIPTS)/deploy-ues.py --delete --start 10 --count 4
+	sleep 45
+	@echo "[INFO] Suppression 4 UEs (006-009)..."
+	python3 $(SCRIPTS)/deploy-ues.py --delete --start 6 --count 4
 	@wait
-	python3 $(SCRIPTS)/deploy-ues.py --delete --start 6 --count 16
 	@echo "[FIN] $(RESULTS)/scenario-20ues.csv"
 
 all-scenarios: scenario-4ues scenario-10ues scenario-20ues compare
