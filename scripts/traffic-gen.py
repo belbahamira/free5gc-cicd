@@ -35,9 +35,17 @@ def get_ue_pods(count):
     return ue_pods[:count]
 
 def setup_route(pod):
-    """Ajoute route 8.8.8.8 via uesimtun0 si absente."""
+    """Attend uesimtun0 puis ajoute route."""
+    import time as t
+    for _ in range(24):  # max 120s
+        r = kubectl("exec","-n",NAMESPACE,pod,"--",
+                    "ip","addr","show","uesimtun0", check=False)
+        if r.returncode == 0:
+            break
+        t.sleep(5)
     kubectl("exec","-n",NAMESPACE,pod,"--",
-            "ip","route","add",f"{TARGET_IP}/32","dev","uesimtun0")
+            "ip","route","add",f"{TARGET_IP}/32","dev","uesimtun0",
+            check=False)
 
 def run_ping(pod, duration, pps, size):
     """Lance ping dans le pod et retourne les stats."""
@@ -45,12 +53,9 @@ def run_ping(pod, duration, pps, size):
     count    = int(duration * pps)
     setup_route(pod)
     start = time.time()
-    r = kubectl("exec","-n",NAMESPACE,pod,"--",
-                "ping","-I","uesimtun0",TARGET_IP,
-                "-c",str(count),
-                "-s",str(size),
-                "-i",str(interval),
-                "-W","2")
+    cmd = (f"ip route add {TARGET_IP}/32 dev uesimtun0 2>/dev/null || true && "
+           f"ping {TARGET_IP} -c {count} -s {size} -i {interval} -W 2")
+    r = kubectl("exec","-n",NAMESPACE,pod,"--","sh","-c",cmd)
     elapsed = time.time() - start
     return parse_ping(pod, r.stdout, elapsed)
 

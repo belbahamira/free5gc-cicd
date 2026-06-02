@@ -3,7 +3,7 @@ import subprocess, json, sys, argparse, time, copy
 
 NAMESPACE   = "free5gc"
 TEMPLATE_UE = "ueransim-ue-002"
-IMSI_PREFIX = "2089300000"
+IMSI_PREFIX = "20893"  # MCC=208 MNC=93, MSIN=10 chiffres
 
 def kubectl(*args, input_data=None, check=True):
     cmd = ["kubectl"] + list(args)
@@ -43,8 +43,8 @@ def create_ue_configmap(index, cm_template):
         return None
     import copy
     cm = copy.deepcopy(cm_template)
-    old_imsi = "imsi-208930000000002"
-    new_imsi = f"imsi-20893000000{index:04d}"
+    old_imsi = "imsi-208930000000002"  # 15 chiffres
+    new_imsi = f"imsi-20893{index:010d}"
     old_name = cm["metadata"]["name"]
     new_name = old_name.replace("002", f"{index:03d}")
     cm["metadata"]["name"] = new_name
@@ -57,7 +57,7 @@ def create_ue_configmap(index, cm_template):
 
 def build_manifest(index, template):
     name = f"ueransim-ue-{index:03d}"
-    imsi = f"{IMSI_PREFIX}{index:04d}"
+    imsi = f"{IMSI_PREFIX}{index:010d}"  # 15 chiffres total
     d = copy.deepcopy(template)
     meta = d["metadata"]
     meta["name"] = name

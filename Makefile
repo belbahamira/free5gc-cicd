@@ -34,6 +34,8 @@ reset-ues:
 
 scenario-4ues: setup check-prometheus
 	@echo "=== SCENARIO 1 : 4 UEs ==="
+	@echo "[INFO] Attente UPF Running..."
+	kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=upf -n free5gc --timeout=180s 2>/dev/null || true
 	python3 $(SCRIPTS)/traffic-gen.py --ues 4 --duration $(DURATION) --pps 200 --size 1400 &
 	python3 $(SCRIPTS)/metrics-collector.py --scenario 4ues --duration $(DURATION) --interval $(INTERVAL) --output $(RESULTS)/scenario-4ues.csv --prometheus $(PROMETHEUS)
 	@wait
