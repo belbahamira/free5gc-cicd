@@ -1,0 +1,59 @@
+apiVersion: v1
+data:
+  ue-config.yaml: |
+    supi: "imsi-208930000000003"
+    mcc: '208'
+    mnc: '93'
+    key: "8baf473f2f8fd09487cccbd7097c6862"
+    op: "8e27b6af0e692e750f32667a3b14605d"
+    opType: "OPC"
+    amf: '8000'
+    imei: '356938035643803'
+    imeiSv: '4370816125816153'
+    uacAic:
+      mps: false
+      mcs: false
+    uacAcc:
+      normalClass: 0
+      class11: false
+      class12: false
+      class13: false
+      class14: false
+      class15: false
+    sessions:
+      - type: "IPv4"
+        apn: "internet"
+        slice:
+          sst: 0x01
+          sd: 0x010203
+    configured-nssai:
+      - sst: 0x01
+        sd: 0x010203
+    default-nssai:
+      - sst: 1
+        sd: 0x010203
+    integrity:
+      IA1: true
+      IA2: true
+      IA3: true
+    ciphering:
+      EA1: true
+      EA2: true
+      EA3: true
+    integrityMaxRate:
+      uplink: 'full'
+      downlink: 'full'
+    gnbSearchList:
+      - gnb-service
+  wrapper.sh: |
+    #!/bin/bash
+    mkdir /dev/net
+    mknod /dev/net/tun c 10 200
+    ./nr-ue -c ../config/ue-config.yaml
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"ue-config.yaml":"supi: \"imsi-208930000000003\"\nmcc: '208'\nmnc: '93'\nkey: \"8baf473f2f8fd09487cccbd7097c6862\"\nop: \"8e27b6af0e692e750f32667a3b14605d\"\nopType: \"OPC\"\namf: '8000'\nimei: '356938035643803'\nimeiSv: '4370816125816153'\nuacAic:\n  mps: false\n  mcs: false\nuacAcc:\n  normalClass: 0\n  class11: false\n  class12: false\n  class13: false\n  class14: false\n  class15: false\nsessions:\n  - type: \"IPv4\"\n    apn: \"internet\"\n    slice:\n      sst: 0x01\n      sd: 0x010203\nconfigured-nssai:\n  - sst: 0x01\n    sd: 0x010203\ndefault-nssai:\n  - sst: 1\n    sd: 0x010203\nintegrity:\n  IA1: true\n  IA2: true\n  IA3: true\nciphering:\n  EA1: true\n  EA2: true\n  EA3: true\nintegrityMaxRate:\n  uplink: 'full'\n  downlink: 'full'\ngnbSearchList:\n  - gnb-service\n","wrapper.sh":"#!/bin/bash\nmkdir /dev/net\nmknod /dev/net/tun c 10 200\n./nr-ue -c ../config/ue-config.yaml\n"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"ue-configmap-003","namespace":"free5gc"}}
+  name: ue-configmap-003
+  namespace: free5gc

@@ -1,0 +1,51 @@
+apiVersion: v1
+data:
+  exporter.py: |
+    from prometheus_client import start_http_server, Gauge
+    import requests, time
+
+    pdu_sessions = Gauge("free5gc_pdu_sessions_total", "Total PDU sessions")
+
+    def count_pdu_sessions():
+        try:
+            with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
+                token = f.read()
+            with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as f:
+                namespace = f.read().strip()
+            headers = {"Authorization": "Bearer " + token}
+            ca = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+            url = "https://kubernetes.default.svc/api/v1/namespaces/" + namespace + "/pods?labelSelector=nf=smf"
+            r = requests.get(url, headers=headers, verify=ca)
+            pods = r.json().get("items", [])
+            if not pods:
+                print("SMF pod not found", flush=True)
+                return 0
+            total = 0
+            for pod in pods:
+                pod_name = pod["metadata"]["name"]
+                log_url = "https://kubernetes.default.svc/api/v1/namespaces/" + namespace + "/pods/" + pod_name + "/log?container=smf"
+                logs = requests.get(log_url, headers=headers, verify=ca).text
+                established = logs.count("PFCP Session Establishment Accepted Response")
+                released = logs.count("PFCP Session Deletion Response")
+                active = max(0, established - released)
+                print("Pod " + pod_name + ": " + str(active) + " active (est=" + str(established) + " rel=" + str(released) + ")", flush=True)
+                total += active
+            return total
+        except Exception as e:
+            print("Error: " + str(e), flush=True)
+            return 0
+
+    start_http_server(8080)
+    print("Exporter started", flush=True)
+    while True:
+        count = count_pdu_sessions()
+        pdu_sessions.set(count)
+        print("PDU sessions active total: " + str(count), flush=True)
+        time.sleep(15)
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"exporter.py":"from prometheus_client import start_http_server, Gauge\nimport requests, time\n\npdu_sessions = Gauge(\"free5gc_pdu_sessions_total\", \"Total PDU sessions\")\n\ndef count_pdu_sessions():\n    try:\n        with open(\"/var/run/secrets/kubernetes.io/serviceaccount/token\") as f:\n            token = f.read()\n        with open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\") as f:\n            namespace = f.read().strip()\n        headers = {\"Authorization\": \"Bearer \" + token}\n        ca = \"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt\"\n        url = \"https://kubernetes.default.svc/api/v1/namespaces/\" + namespace + \"/pods?labelSelector=nf=smf\"\n        r = requests.get(url, headers=headers, verify=ca)\n        pods = r.json().get(\"items\", [])\n        if not pods:\n            print(\"SMF pod not found\", flush=True)\n            return 0\n        total = 0\n        for pod in pods:\n            pod_name = pod[\"metadata\"][\"name\"]\n            log_url = \"https://kubernetes.default.svc/api/v1/namespaces/\" + namespace + \"/pods/\" + pod_name + \"/log?container=smf\"\n            logs = requests.get(log_url, headers=headers, verify=ca).text\n            established = logs.count(\"PFCP Session Establishment Accepted Response\")\n            released = logs.count(\"PFCP Session Deletion Response\")\n            active = max(0, established - released)\n            print(\"Pod \" + pod_name + \": \" + str(active) + \" active (est=\" + str(established) + \" rel=\" + str(released) + \")\", flush=True)\n            total += active\n        return total\n    except Exception as e:\n        print(\"Error: \" + str(e), flush=True)\n        return 0\n\nstart_http_server(8080)\nprint(\"Exporter started\", flush=True)\nwhile True:\n    count = count_pdu_sessions()\n    pdu_sessions.set(count)\n    print(\"PDU sessions active total: \" + str(count), flush=True)\n    time.sleep(15)\n"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"pdu-exporter-script","namespace":"free5gc"}}
+  name: pdu-exporter-script
+  namespace: free5gc

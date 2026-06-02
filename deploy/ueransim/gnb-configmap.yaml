@@ -1,0 +1,48 @@
+apiVersion: v1
+data:
+  gnb-config.yaml: |
+    mcc: '208'
+    mnc: '93'
+    nci: '0x000000010'
+    idLength: 32
+    tac: 1
+    slices:
+      - sst: 0x1
+        sd: 0x010203
+    ignoreStreamIds: true
+    linkIp: 0.0.0.0
+    ngapIp: 10.100.50.250
+    gtpIp: 10.100.51.37
+    amfConfigs:
+      - address: 10.100.50.249
+        port: 38412
+  gnbcfg.yaml: |
+    mcc: '208'
+    mnc: '93'
+    nci: '0x000000010'
+    idLength: 32
+    tac: 1
+    linkIp: 0.0.0.0
+    ngapIp: 10.100.50.250
+    gtpIp: 10.100.51.37
+    amfConfigs:
+      - address: 10.100.50.249
+        port: 38412
+    slices:
+      - sst: 0x1
+        sd: 0x010203
+    ignoredStreamIds:
+      - 0
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"gnb-config.yaml":"mcc: '208'\nmnc: '93'\nnci: '0x000000010'\nidLength: 32\ntac: 1\nslices:\n  - sst: 0x1\n    sd: 0x010203\nignoreStreamIds: true\nlinkIp: 0.0.0.0\nngapIp: 10.100.50.250\ngtpIp: 10.100.51.37\namfConfigs:\n  - address: 10.100.50.249\n    port: 38412\n","gnbcfg.yaml":"mcc: '208'\nmnc: '93'\nnci: '0x000000010'\nidLength: 32\ntac: 1\nlinkIp: 0.0.0.0\nngapIp: 10.100.50.250\ngtpIp: 10.100.51.37\namfConfigs:\n  - address: 10.100.50.249\n    port: 38412\nslices:\n  - sst: 0x1\n    sd: 0x010203\nignoredStreamIds:\n  - 0\n"},"kind":"ConfigMap","metadata":{"annotations":{},"labels":{"app":"ueransim","component":"gnb"},"name":"gnb-configmap","namespace":"free5gc"}}
+    meta.helm.sh/release-name: ueransim
+    meta.helm.sh/release-namespace: free5gc
+  labels:
+    app: ueransim
+    app.kubernetes.io/managed-by: Helm
+    component: gnb
+  name: gnb-configmap
+  namespace: free5gc
