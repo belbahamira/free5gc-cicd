@@ -10,6 +10,21 @@ spec:
   maxReplicaCount: 5
   pollingInterval: 15
   cooldownPeriod: 30
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 120
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 30
   triggers:
   - type: prometheus
     metadata:
@@ -17,7 +32,3 @@ spec:
       metricName: free5gc_pdu_sessions_total
       query: free5gc_pdu_sessions_total
       threshold: "4"
-  - type: cpu
-    metricType: Utilization
-    metadata:
-      value: "80"
