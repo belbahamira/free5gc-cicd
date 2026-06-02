@@ -123,29 +123,6 @@ make scenario-20ues
 make compare
 ```
 
-free5gc-cicd/
-├── start-free5gc.sh          # Démarrage complet du système
-├── start-minikube.sh         # Démarrage Minikube
-├── Makefile                  # Orchestration des scénarios
-├── scripts/
-│   ├── deploy-ues.py         # Déployer/supprimer N UEs dynamiquement
-│   ├── traffic-gen.py        # Générer trafic calibré via uesimtun0
-│   ├── metrics-collector.py  # Collecter métriques Prometheus → CSV
-│   ├── compare-results.py    # Comparer les scénarios
-│   ├── provision-ues.py      # Provisionner abonnés dans MongoDB
-│   ├── update-smf-upf.py     # Mise à jour IPs UPF dans ConfigMap SMF
-│   ├── smf-request-exporter.py
-│   └── upf-watcher.py
-├── deploy/
-│   ├── keda/                 # ScaledObjects SMF et UPF
-│   ├── monitoring/           # Exporters, ServiceMonitors, Watchers
-│   ├── network/              # Multus CNI configs N3/N4/N6
-│   ├── ueransim/             # Configs gNB et UE
-│   └── values-minikube.yaml  # Helm values Free5GC
-├── dashboards/
-│   └── free5gc-dashboard.json
-└── results/                  # CSV des scénarios
-
 
 ## Structure
 ```text
