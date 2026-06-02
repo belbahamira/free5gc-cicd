@@ -1,0 +1,150 @@
+global:
+  userPlaneArchitecture: single
+  n2network:
+    masterIf: eth0
+  n3network:
+    masterIf: eth0
+  n4network:
+    masterIf: eth0
+  n6network:
+    masterIf: eth0
+  n9network:
+    masterIf: eth0
+free5gc-upf:
+  securityContext:
+    privileged: true
+    capabilities:
+      add:
+        - NET_ADMIN
+  upf:
+    cfgFiles:
+      upfcfg.yaml:
+        configuration:
+          pfcp:
+            addr: "192.168.49.2"
+          gtpu:
+            addr: "192.168.49.2"
+          dnnList:
+            - dnn: internet
+              cidr: 10.60.0.0/24
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+
+free5gc-smf:
+  smf:
+    cfgFiles:
+      smfcfg.yaml:
+        configuration:
+          pfcp:
+            addr: "192.168.49.2"
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+free5gc-amf:
+  amf:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+free5gc-nrf:
+  nrf:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+free5gc-pcf:
+  pcf:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+free5gc-udm:
+  udm:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+free5gc-ausf:
+  ausf:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+free5gc-nssf:
+  nssf:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+free5gc-webconsole:
+  webconsole:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+mongodb:
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/mongodb
+    tag: "7.0"
+  livenessProbe:
+    enabled: false # Désactivé pour laisser MongoDB finir sa réparation sans être tué
+  readinessProbe:
+    enabled: false # Désactivé pour que les autres Pods puissent essayer de se connecter plus vite
+  fullnameOverride: "mongodb"
+  useStatefulSet: false # Garde-le à false pour Minikube si tu n'utilises pas de stockage persistant complexe
+  auth:
+    enabled: false
+  persistence:
+    enabled: true # Assure-toi que la persistance est bien activée
+    size: 6Gi
+    mountPath: /bitnami/mongodb/data/db/
+  service:
+    name: mongodb
+    type: ClusterIP
+    port: 27017
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi # Augmenté un peu pour aider la récupération des logs
+    limits:
+      cpu: 1000m
+      memory: 1Gi

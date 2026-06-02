@@ -1,0 +1,64 @@
+{
+  "title": "Free5GC Autoscaling Dashboard",
+  "panels": [
+    {
+      "title": "UPF Replicas",
+      "type": "timeseries",
+      "gridPos": {"x":0,"y":0,"w":12,"h":8},
+      "targets": [{
+        "expr": "kube_deployment_spec_replicas{namespace='free5gc',deployment='free5gc-free5gc-upf-upf'}",
+        "legendFormat": "UPF replicas"
+      }]
+    },
+    {
+      "title": "SMF Replicas",
+      "type": "timeseries",
+      "gridPos": {"x":12,"y":0,"w":12,"h":8},
+      "targets": [{
+        "expr": "kube_deployment_spec_replicas{namespace='free5gc',deployment='free5gc-free5gc-smf-smf'}",
+        "legendFormat": "SMF replicas"
+      }]
+    },
+    {
+      "title": "UPF Throughput (bps)",
+      "type": "timeseries",
+      "gridPos": {"x":0,"y":8,"w":12,"h":8},
+      "targets": [{
+        "expr": "sum(free5gc_upf_throughput_bps)",
+        "legendFormat": "Total throughput bps"
+      }]
+    },
+    {
+      "title": "PDU Sessions actives",
+      "type": "timeseries",
+      "gridPos": {"x":12,"y":8,"w":12,"h":8},
+      "targets": [{
+        "expr": "free5gc_pdu_sessions_total",
+        "legendFormat": "PDU sessions"
+      },{
+        "expr": "increase(free5gc_pdu_session_requests_total[30s])",
+        "legendFormat": "Requests increase 30s"
+      }]
+    },
+    {
+      "title": "CPU SMF (millicores)",
+      "type": "timeseries",
+      "gridPos": {"x":0,"y":16,"w":12,"h":8},
+      "targets": [{
+        "expr": "sum(rate(container_cpu_usage_seconds_total{namespace='free5gc',container='smf'}[1m])) * 1000",
+        "legendFormat": "SMF CPU total (m)"
+      }]
+    },
+    {
+      "title": "CPU UPF (millicores)",
+      "type": "timeseries",
+      "gridPos": {"x":12,"y":16,"w":12,"h":8},
+      "targets": [{
+        "expr": "sum(rate(container_cpu_usage_seconds_total{namespace='free5gc',container='upf'}[1m])) * 1000",
+        "legendFormat": "UPF CPU total (m)"
+      }]
+    }
+  ],
+  "refresh": "5s",
+  "time": {"from": "now-15m","to": "now"}
+}

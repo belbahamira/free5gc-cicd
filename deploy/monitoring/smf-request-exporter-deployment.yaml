@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smf-request-exporter
+  namespace: free5gc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: smf-request-exporter
+  template:
+    metadata:
+      labels:
+        app: smf-request-exporter
+    spec:
+      serviceAccountName: pdu-exporter-sa
+      containers:
+      - name: exporter
+        image: smf-request-exporter:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: smf-request-exporter
+  namespace: free5gc
+  labels:
+    app: smf-request-exporter
+spec:
+  selector:
+    app: smf-request-exporter
+  ports:
+  - port: 8001
+    targetPort: 8001
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: smf-request-exporter
+  namespace: free5gc
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: smf-request-exporter
+  endpoints:
+  - port: "8001"
+    interval: 5s

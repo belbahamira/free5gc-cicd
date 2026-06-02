@@ -1,0 +1,159 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: upf-watcher-sa
+  namespace: free5gc
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: upf-watcher-role
+  namespace: free5gc
+rules:
+- apiGroups: [""]
+  resources: ["pods", "configmaps"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: ["apps"]
+  resources: ["deployments/rollout"]
+  verbs: ["create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: upf-watcher-binding
+  namespace: free5gc
+subjects:
+- kind: ServiceAccount
+  name: upf-watcher-sa
+  namespace: free5gc
+roleRef:
+  kind: Role
+  name: upf-watcher-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: upf-watcher-script
+  namespace: free5gc
+data:
+  watcher.py: |
+    #!/usr/bin/env python3
+    import subprocess, json, time, re
+
+    def get_upf_ips():
+        r = subprocess.run(['kubectl','get','pod','-n','free5gc',
+                           '-l','nf=upf','-o','json'],
+                          capture_output=True, text=True)
+        pods = json.loads(r.stdout)['items']
+        ips = []
+        for p in pods:
+            if p.get('status',{}).get('phase') != 'Running': continue
+            nets = json.loads(p['metadata']['annotations'].get(
+                'k8s.v1.cni.cncf.io/network-status','[]'))
+            n4,n3 = None,None
+            for n in nets:
+                if 'n4' in n['name']: n4 = n['ips'][0]
+                if 'n3' in n['name']: n3 = n['ips'][0]
+            if n4 and n3: ips.append((n4,n3))
+        return ips
+
+    def resync_and_restart():
+        print("[WATCHER] Mise à jour ConfigMap SMF...")
+        r = subprocess.run(['kubectl','get','configmap',
+                           'free5gc-free5gc-smf-configmap',
+                           '-n','free5gc','-o','json'],
+                          capture_output=True, text=True)
+        cm = json.loads(r.stdout)
+        smfcfg = cm['data']['smfcfg.yaml']
+        
+        upf_ips = get_upf_ips()
+        upf_names = ['UPF1','UPF2','UPF3','UPF4']
+        
+        for i, name in enumerate(upf_names):
+            if i < len(upf_ips):
+                n4,n3 = upf_ips[i]
+                smfcfg = re.sub(
+                    rf'({name}:.*?nodeID: )(None|__N4_IP__|10\.100\.51\.\d+)',
+                    rf'\g<1>{n4}', smfcfg, flags=re.DOTALL)
+                smfcfg = re.sub(
+                    rf'({name}:.*?addr: )(None|__N4_IP__|10\.100\.51\.\d+)',
+                    rf'\g<1>{n4}', smfcfg, flags=re.DOTALL)
+                smfcfg = re.sub(
+                    rf'({name}:.*?endpoints:\s*\n\s*- )(None|10\.100\.51\.\d+)',
+                    rf'\g<1>{n3}', smfcfg, flags=re.DOTALL)
+                print(f"[WATCHER] {name} → N4={n4} N3={n3}")
+            else:
+                smfcfg = re.sub(
+                    rf'({name}:.*?nodeID: )(10\.100\.51\.\d+)',
+                    rf'\g<1>None', smfcfg, flags=re.DOTALL)
+
+        cm['data']['smfcfg.yaml'] = smfcfg
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False) as f:
+            json.dump(cm, f)
+            tmp = f.name
+        subprocess.run(['kubectl','apply','-f',tmp])
+        os.unlink(tmp)
+        
+        print("[WATCHER] Restart SMF...")
+        subprocess.run(['kubectl','rollout','restart','deployment',
+                       'free5gc-free5gc-smf-smf','-n','free5gc'])
+        subprocess.run(['kubectl','wait','--for=condition=ready',
+                       'pod','-l','nf=smf','-n','free5gc','--timeout=120s'])
+        print("[WATCHER] ✅ Re-sync terminé")
+
+    last_ips = []
+    print("[WATCHER] Démarrage...")
+    while True:
+        time.sleep(10)
+        try:
+            current = get_upf_ips()
+            if current != last_ips:
+                print(f"[WATCHER] Changement UPF: {last_ips} → {current}")
+                if current and not last_ips:
+                    print("[WATCHER] Wake-up UPF — attente 20s...")
+                    time.sleep(20)
+                    resync_and_restart()
+                elif not current:
+                    print("[WATCHER] Scale-to-zero UPF")
+                last_ips = current
+        except Exception as e:
+            print(f"[WATCHER] Erreur: {e}")
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: upf-watcher
+  namespace: free5gc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: upf-watcher
+  template:
+    metadata:
+      labels:
+        app: upf-watcher
+    spec:
+      serviceAccountName: upf-watcher-sa
+      containers:
+      - name: watcher
+        image: python:3.11-slim
+        command:
+        - /bin/sh
+        - -c
+        - |
+          apt-get install -y python3 2>/dev/null || true
+          python3 /scripts/watcher.py
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+      volumes:
+      - name: scripts
+        configMap:
+          name: upf-watcher-script
+          defaultMode: 0755

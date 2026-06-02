@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: upf-sidecar-metrics
+  namespace: free5gc
+  labels:
+    app: upf-sidecar
+spec:
+  selector:
+    nf: upf
+  ports:
+  - name: metrics
+    port: 8081
+    targetPort: 8081
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: upf-sidecar
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+    - free5gc
+  selector:
+    matchLabels:
+      app: upf-sidecar
+  endpoints:
+  - port: metrics
+    interval: 15s

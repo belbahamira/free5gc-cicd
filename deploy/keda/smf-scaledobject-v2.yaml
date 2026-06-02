@@ -1,0 +1,23 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: smf-scaler
+  namespace: free5gc
+spec:
+  scaleTargetRef:
+    name: free5gc-free5gc-smf-smf
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  pollingInterval: 15
+  cooldownPeriod: 30
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+      metricName: free5gc_pdu_sessions_total
+      query: free5gc_pdu_sessions_total
+      threshold: "4"
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: "80"
