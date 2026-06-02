@@ -146,6 +146,38 @@ free5gc-cicd/
 │   └── free5gc-dashboard.json
 └── results/                  # CSV des scénarios
 
+
+## Structure
+```text
+free5gc-cicd/
+├── start-free5gc.sh          # Démarrage complet du système
+├── start-minikube.sh         # Démarrage Minikube
+├── setup.sh                  # Installation sur nouveau PC
+├── Makefile                  # Orchestration des scénarios
+├── scripts/
+│   ├── deploy-ues.py         # Déployer/supprimer N UEs dynamiquement
+│   ├── traffic-gen.py        # Générer trafic calibré via uesimtun0
+│   ├── metrics-collector.py  # Collecter métriques Prometheus -> CSV
+│   ├── compare-results.py    # Comparer les scénarios
+│   ├── provision-ues.py      # Provisionner abonnés dans MongoDB
+│   ├── update-smf-upf.py     # Mise à jour IPs UPF dans ConfigMap SMF
+│   ├── smf-request-exporter.py
+│   └── upf-watcher.py
+├── deploy/
+│   ├── keda/                 # ScaledObjects SMF et UPF
+│   ├── monitoring/           # Exporters, ServiceMonitors, Watchers
+│   ├── network/              # Multus CNI configs N3/N4/N6
+│   ├── ueransim/             # Configs gNB et UE + ConfigMaps
+│   └── values-minikube.yaml  # Helm values Free5GC
+├── docker/
+│   ├── pdu-exporter/         # Dockerfile + exporter.py
+│   ├── smf-request-exporter/ # Dockerfile + smf-request-exporter.py
+│   └── upf-sidecar/          # Dockerfile + sidecar.py
+├── dashboards/
+│   └── free5gc-dashboard.json
+└── results/                  # CSV des scénarios
+```
+
 ## Scaling KEDA
 - **SMF** : threshold=4 sessions PDU → 1 replica par 4 sessions
 - **UPF** : threshold=400 kbps throughput + wake-up event-driven + CPU 80%
