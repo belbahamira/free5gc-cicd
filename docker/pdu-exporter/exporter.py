@@ -27,8 +27,8 @@ def count_pdu_sessions():
                       f"/pods/{pod_name}/log?container=smf&sinceSeconds=300")
             logs = requests.get(log_url, headers=headers, verify=ca).text
 
-            established = logs.count("PFCP Session Establishment Accepted Response")
-            released = logs.count("PFCP Session Deletion Response")
+            established = logs.count("Sending PFCP Session Establishment Request")
+            released = logs.count("In HandlePDUSessionSMContextRelease")
             active = max(0, established - released)
             print(f"Pod {pod_name}: {active} active (est={established} rel={released})", flush=True)
             total += active
