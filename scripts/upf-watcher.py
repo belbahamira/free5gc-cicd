@@ -37,7 +37,7 @@ def get_configmap_upf_ips():
 
 def resync():
     print("[WATCHER] Re-sync IPs UPF...")
-    subprocess.run(['python3', '/home/amira/update-smf-upf.py'])
+    subprocess.run(['python3', '/scripts/update-smf-upf.py'])
     
     print("[WATCHER] Restart SMF...")
     subprocess.run(['kubectl', 'rollout', 'restart',
@@ -48,6 +48,8 @@ def resync():
 
 def main():
     print("[WATCHER] Démarrage surveillance UPF...")
+    print("[WATCHER] Attente stabilisation initiale (30s)...")
+    time.sleep(30)
     last_ips = get_upf_ips()
     print(f"[WATCHER] État initial UPF IPs: {last_ips}")
     
