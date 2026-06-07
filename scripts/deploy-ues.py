@@ -52,7 +52,7 @@ def create_ue_configmap(index, cm_template):
         cm["metadata"].pop(k, None)
     # Remplacer IMSI dans toutes les valeurs
     for key, val in cm.get("data",{}).items():
-        cm["data"][key] = val.replace(old_imsi, new_imsi).replace("000000002", f"{index:010d}")
+        cm["data"][key] = val.replace(old_imsi, new_imsi)
     return cm, new_name
 
 def build_manifest(index, template):
