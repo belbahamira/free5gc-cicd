@@ -1,0 +1,1234 @@
+% ============================================================
+%  Chapter 4 — Implementation and Experimentation
+%  Compile with: pdflatex -> biber -> pdflatex -> pdflatex
+%
+%  Required preamble packages (add to main.tex):
+%    \usepackage[acronym,toc]{glossaries}  % or glossaries-extra
+%    \usepackage{listings}
+%    \usepackage{lstautogobble}
+%    \usepackage{xcolor}
+%    \usepackage{booktabs}
+%    \usepackage{tabularx}
+%    \usepackage{multirow}
+%    \usepackage{graphicx}
+%    \usepackage{subcaption}
+%    \usepackage[backend=biber,style=ieee]{biblatex}
+%    \usepackage{hyperref}
+%    \usepackage{float}
+%    \usepackage{tikz}          % optional, for diagrams
+%
+%  Acronyms expected in your glossary file (e.g., acronyms.tex):
+%    5G, ue, gnb, amf, smf, upf, nrf, ausf, udm, pcf, nssf,
+%    pfcp, pdu, gtp, gtpu, keda, hpa, vpa, cicd, cni, api,
+%    mcc, mnc, imsi, ngap, nas, sbi, nssai, dnn, qos, ram,
+%    cpu, vm, yaml, ip, ran, nf, helm, rbac, sa
+% ============================================================
+
+\chapter{Implementation and Experimental Validation}
+\label{chap:implementation}
+
+% ============================================================
+\section{Introduction and Objectives}
+\label{sec:intro_objectives}
+% ============================================================
+
+The previous chapters laid the theoretical foundations of \gls{5G} standalone architecture and the principles of cloud-native network function deployment. This chapter bridges theory and practice by presenting the complete implementation of an intelligent autoscaling system for the \gls{5G} core network \emph{Free5GC}, deployed on a local Kubernetes cluster managed by Minikube and orchestrated by \gls{keda}.
+
+The primary objectives of this work are:
+
+\begin{enumerate}
+  \item \textbf{Deploy a fully functional 5G standalone core network} on a commodity laptop using containerisation and Kubernetes, validating that virtualised \glspl{nf} can operate in a resource-constrained environment.
+  \item \textbf{Simulate realistic \gls{ran} traffic} using \gls{ueransim}, a software-based 5G \gls{gnb} and \gls{ue} emulator, to generate \gls{pdu} session establishment and data-plane traffic.
+  \item \textbf{Design and deploy custom Prometheus exporters} that expose fine-grained, application-level metrics—namely active \gls{pdu} sessions and \gls{upf} throughput—that are unavailable from standard Kubernetes instrumentation.
+  \item \textbf{Configure event-driven autoscaling} via \gls{keda} \texttt{ScaledObject} resources for the \gls{smf} and \gls{upf} pods, tying horizontal scaling decisions to business-level 5G metrics rather than generic \gls{cpu} utilisation.
+  \item \textbf{Automate dynamic \gls{ue} lifecycle management}, including provisioning subscribers into the MongoDB database, deploying and deleting \gls{ue} pods at runtime, and regenerating the \gls{smf} configuration whenever a new \gls{upf} pod is scaled in.
+  \item \textbf{Execute three load scenarios} (4, 10, and 20 \glspl{ue}) with automated traffic generation and metric collection, producing \texttt{CSV} time-series datasets suitable for quantitative comparison.
+\end{enumerate}
+
+The chapter is organised as follows: Section~\ref{sec:env} describes the hardware and software environment; Section~\ref{sec:prerequisites} covers the prerequisite installation procedure; Section~\ref{sec:core_deploy} details the core network deployment; Section~\ref{sec:ueransim_deploy} covers the \gls{ran} simulation setup; Section~\ref{sec:exporters} explains the custom monitoring exporters; Section~\ref{sec:keda_autoscaling} presents the \gls{keda} autoscaling configuration; Section~\ref{sec:scenarios} describes the experimental scenarios; and Section~\ref{sec:results} analyses the collected results.
+
+% ============================================================
+\section{Experimental Environment}
+\label{sec:env}
+% ============================================================
+
+\subsection{Hardware Platform}
+
+All experiments were conducted on a single physical machine to reflect a realistic low-cost research or edge-deployment scenario. The machine specifications are summarised in Table~\ref{tab:hardware}.
+
+\begin{table}[H]
+  \centering
+  \caption{Hardware specifications of the experimental host machine}
+  \label{tab:hardware}
+  \begin{tabularx}{\linewidth}{lX}
+    \toprule
+    \textbf{Component} & \textbf{Specification} \\
+    \midrule
+    Model      & HP EliteBook 830 G6 \\
+    \gls{cpu}  & Intel Core i5-8365U, 4 cores / 8 threads, up to 4.1 GHz \\
+    \gls{ram}  & 15.4 GB DDR4 \\
+    Storage    & 512 GB NVMe SSD \\
+    Network    & Gigabit Ethernet + Wi-Fi 802.11ac \\
+    Operating System & Ubuntu 22.04.3 LTS (kernel 5.15) \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+Although the \gls{5G} core network is typically deployed across a multi-server infrastructure, the use of a single machine with Minikube demonstrates the system's viability for academic prototyping and validates the autoscaling logic without the operational complexity of a production cluster.
+
+\subsection{Software Stack}
+
+The full software stack is depicted in Figure~\ref{fig:software_stack} and enumerated in Table~\ref{tab:software}.
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Draw a layered diagram showing:
+%   Bottom layer:  Ubuntu 22.04 / bare metal
+%   Layer 2:       Docker Engine (container runtime)
+%   Layer 3:       Minikube (single-node Kubernetes cluster)
+%   Layer 4:       Kubernetes v1.35.4 (flannel CNI + Multus CNI)
+%   Layer 5 (split into columns):
+%       Free5GC v3.3.0  |  UERANSIM v3.2.6  |  KEDA  |  Prometheus+Grafana
+%   Top:              Helm charts / kubectl / Python scripts
+% A nice tool: draw.io, Inkscape, or TikZ
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=0.85\linewidth]{figures/chap4/software_stack.pdf}
+  \fbox{\textit{[Figure suggestion: Software stack layered diagram — Ubuntu → Docker → Minikube → Kubernetes → Free5GC / UERANSIM / KEDA / Prometheus]}}
+  \caption{Software stack of the experimental platform}
+  \label{fig:software_stack}
+\end{figure}
+
+\begin{table}[H]
+  \centering
+  \caption{Software components and versions}
+  \label{tab:software}
+  \begin{tabularx}{\linewidth}{llX}
+    \toprule
+    \textbf{Component} & \textbf{Version} & \textbf{Role} \\
+    \midrule
+    Ubuntu LTS       & 22.04.3  & Host operating system \\
+    Docker Engine    & 24.x     & Container runtime for Minikube driver \\
+    Minikube         & v1.38.1  & Single-node Kubernetes provisioner \\
+    Kubernetes       & v1.35.4  & Container orchestration platform \\
+    Flannel          & latest   & Default \gls{cni} plugin (pod network) \\
+    Multus \gls{cni} & master   & Multi-interface \gls{cni} meta-plugin \\
+    gtp5g            & v0.8.5   & Linux kernel module for GTP-U tunnelling \\
+    Helm             & v3.x     & Kubernetes package manager \\
+    Free5GC          & v3.3.0   & Open-source 5G SA core network \\
+    UERANSIM         & v3.2.6   & 5G \gls{gnb} and \gls{ue} emulator \\
+    \gls{keda}       & latest   & Event-driven horizontal autoscaler \\
+    Prometheus       & v2.x     & Time-series metrics database \\
+    Grafana          & v10.x    & Metrics visualisation dashboard \\
+    Python           & 3.9–3.11 & Automation and exporter scripts \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Overall System Architecture}
+
+Figure~\ref{fig:arch_overview} presents the high-level architecture of the deployed system, illustrating how the major subsystems interact. The \gls{ran} simulation layer (UERANSIM \gls{gnb} and \glspl{ue}) communicates with the 5G core through the N2 (control plane, \gls{ngap}) and N3 (user plane, \gls{gtpu}) interfaces. Within the core, the \gls{amf} handles mobility and session management signalling, the \gls{smf} establishes and manages \gls{pdu} sessions via the N4 (\gls{pfcp}) interface to the \gls{upf}, and the \gls{upf} forwards user data packets to the data network through the N6 interface. The custom exporters (PDU, SMF-request, UPF-sidecar) scrape application-level metrics and expose them to Prometheus, which \gls{keda} queries to drive autoscaling decisions.
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Full system architecture diagram showing:
+%   Left side: UERANSIM pods (gNB + UE-002...UE-021)
+%   Center:    Free5GC NFs (AMF, SMF×N, UPF×M, NRF, AUSF, UDM, PCF, UDR, MongoDB)
+%   Right:     Data Network (8.8.8.8 via iptables MASQUERADE)
+%   Bottom:    Prometheus ← exporters; Grafana → Prometheus; KEDA → Prometheus
+%   Arrows labelled with interface names: N1/N2 (NGAP), N3 (GTP-U), N4 (PFCP),
+%             N6, N7, N10, N11, SBI (HTTP/2)
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/chap4/architecture_overview.pdf}
+  \fbox{\textit{[Figure suggestion: Full system architecture — UERANSIM ↔ Free5GC NFs ↔ Data Network, with Prometheus/KEDA autoscaling loop below]}}
+  \caption{High-level architecture of the Free5GC autoscaling testbed}
+  \label{fig:arch_overview}
+\end{figure}
+
+% ============================================================
+\section{Prerequisites and Environment Setup}
+\label{sec:prerequisites}
+% ============================================================
+
+This section documents each prerequisite installation step in the order required to bring up a functional 5G testbed from a clean Ubuntu 22.04 installation.
+
+\subsection{Container Runtime — Docker}
+
+Docker is used both as the container runtime for Kubernetes pods and as the \texttt{--driver} for Minikube, allowing the entire Kubernetes node to run inside a Docker container.
+
+\begin{lstlisting}[language=bash, caption={Installing Docker and adding the user to the docker group}, label={lst:docker_install}]
+sudo apt-get update
+sudo apt-get install -y docker.io
+sudo usermod -aG docker $USER
+newgrp docker
+\end{lstlisting}
+
+\subsection{Kubernetes CLI — kubectl}
+
+\texttt{kubectl} is the command-line interface to the Kubernetes \gls{api} server. It is downloaded as a static binary and installed system-wide.
+
+\begin{lstlisting}[language=bash, caption={Downloading and installing kubectl}, label={lst:kubectl_install}]
+curl -LO "https://dl.k8s.io/release/$(curl -L -s \
+  https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+\end{lstlisting}
+
+\subsection{Local Kubernetes Cluster — Minikube}
+
+Minikube provisions a single-node Kubernetes cluster inside a Docker container, making it suitable for development and testing on a laptop~\cite{minikube}. Version \texttt{v1.38.1} was chosen for its stable support of Kubernetes v1.35.4.
+
+\begin{lstlisting}[language=bash, caption={Installing Minikube v1.38.1}, label={lst:minikube_install}]
+curl -LO https://storage.googleapis.com/minikube/releases/\
+  v1.38.1/minikube-linux-amd64
+sudo install minikube-linux-amd64 /usr/local/bin/minikube
+\end{lstlisting}
+
+Minikube is started with the following resource allocation, reserving 6 \gls{cpu} cores and 12 GB of \gls{ram} for the cluster, using Flannel as the default \gls{cni}:
+
+\begin{lstlisting}[language=bash, caption={Starting Minikube with resource allocation (start-minikube.sh)}, label={lst:minikube_start}]
+minikube start \
+  --driver=docker \
+  --cpus=6 \
+  --memory=12288 \
+  --disk-size=40g \
+  --kubernetes-version=v1.35.4 \
+  --cni=flannel
+\end{lstlisting}
+
+\subsection{Helm — Kubernetes Package Manager}
+
+Helm simplifies the deployment of complex Kubernetes applications by packaging all required manifests into versioned \emph{charts}~\cite{helm}. Both Free5GC and UERANSIM are installed via the \texttt{towards5gs} Helm repository.
+
+\begin{lstlisting}[language=bash, caption={Installing Helm}, label={lst:helm_install}]
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 \
+  | bash
+\end{lstlisting}
+
+\subsection{GTP-U Kernel Module — gtp5g}
+
+The \texttt{gtp5g} kernel module implements the \gls{gtpu} tunnelling protocol required by the \gls{upf} to forward \gls{5G} user-plane packets~\cite{gtp5g}. It must be compiled and inserted into the host kernel before starting the \gls{upf} pod.
+
+\begin{lstlisting}[language=bash, caption={Compiling and installing the gtp5g kernel module v0.8.5}, label={lst:gtp5g_install}]
+sudo apt-get install -y git gcc make linux-headers-$(uname -r)
+git clone https://github.com/free5gc/gtp5g.git
+cd gtp5g && git checkout v0.8.5
+make && sudo make install
+\end{lstlisting}
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Screenshot of `lsmod | grep gtp5g` showing the
+% module loaded, or `modinfo gtp5g` output.
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=0.75\linewidth]{figures/chap4/gtp5g_lsmod.png}
+  \fbox{\textit{[Screenshot suggestion: Terminal output of \texttt{lsmod | grep gtp5g} confirming module is loaded]}}
+  \caption{Confirmation of the \texttt{gtp5g} kernel module load}
+  \label{fig:gtp5g_lsmod}
+\end{figure}
+
+\subsection{Multi-Interface Networking — Multus CNI}
+
+Standard Kubernetes pods have a single network interface. However, 5G network functions require multiple interfaces: the \gls{upf} needs simultaneous connectivity on N3 (GTP-U towards the \gls{gnb}), N4 (\gls{pfcp} towards the \gls{smf}), and N6 (data network). Multus \gls{cni}~\cite{multus} is a meta-plugin that enables attaching multiple interfaces to a single pod.
+
+\begin{lstlisting}[language=bash, caption={Deploying Multus CNI as a DaemonSet}, label={lst:multus_install}]
+kubectl apply -f https://raw.githubusercontent.com/k8snetworkplumbingwg/\
+  multus-cni/master/deployments/multus-daemonset.yml
+\end{lstlisting}
+
+Each additional interface is defined as a \texttt{NetworkAttachmentDefinition} \gls{crd}. Listing~\ref{lst:nad_n3} shows the N3 interface definition for the \gls{upf}, using the \texttt{ipvlan} driver in L2 mode with \texttt{host-local} \gls{ip} address management.
+
+\begin{lstlisting}[language=yaml, caption={NetworkAttachmentDefinition for the UPF N3 interface (n3network-upf-hostlocal.yaml)}, label={lst:nad_n3}]
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: n3network-free5gc-free5gc-upf
+  namespace: free5gc
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "plugins": [{
+      "type": "ipvlan",
+      "master": "eth0",
+      "mode": "l2",
+      "ipam": {
+        "type": "host-local",
+        "ranges": [[{
+          "subnet":     "10.100.51.32/27",
+          "rangeStart": "10.100.51.33",
+          "rangeEnd":   "10.100.51.36",
+          "gateway":    "10.100.51.62"
+        }]],
+        "routes": [{"dst": "0.0.0.0/0", "gw": "10.100.51.62"}]
+      }
+    }]
+  }'
+\end{lstlisting}
+
+The subnet \texttt{10.100.51.32/27} provides up to 4 consecutive addresses (\texttt{.33}–\texttt{.36}), enough for the maximum of 4 \gls{upf} replicas. An analogous definition exists for the N4 interface (\texttt{10.100.51.0/27}) and the N6 interface (\texttt{10.100.100.0/24}).
+
+\subsection{Event-Driven Autoscaler — KEDA}
+
+\gls{keda}~\cite{keda} extends Kubernetes' \gls{hpa} to support custom, external, and event-based scaling triggers. It is installed via its official Helm chart in the dedicated \texttt{keda} namespace.
+
+\begin{lstlisting}[language=bash, caption={Installing KEDA via Helm}, label={lst:keda_install}]
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+helm install keda kedacore/keda \
+  --namespace keda --create-namespace
+\end{lstlisting}
+
+\subsection{Observability Stack — Prometheus and Grafana}
+
+The \texttt{kube-prometheus-stack} Helm chart~\cite{prometheus} bundles Prometheus (metrics collection and storage), Alertmanager, and Grafana (visualisation) into a single installation that also instruments the Kubernetes \gls{api} server, nodes, and pods automatically.
+
+\begin{lstlisting}[language=bash, caption={Installing the kube-prometheus-stack}, label={lst:prometheus_install}]
+helm repo add prometheus-community \
+  https://prometheus-community.github.io/helm-charts
+helm repo update
+helm install prometheus \
+  prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace
+\end{lstlisting}
+
+% ============================================================
+\section{5G Core Network Deployment}
+\label{sec:core_deploy}
+% ============================================================
+
+\subsection{Free5GC Helm Chart and Values}
+
+Free5GC is deployed from the \texttt{towards5gs} Helm repository~\cite{towards5gs_helm}. A custom \texttt{values-minikube.yaml} override file adapts the default configuration to the single-node Minikube environment. The most significant settings are shown in Listing~\ref{lst:values_minikube}.
+
+\begin{lstlisting}[language=yaml, caption={Excerpt of values-minikube.yaml: resource limits and UPF PFCP configuration}, label={lst:values_minikube}]
+global:
+  userPlaneArchitecture: single
+  n2network:
+    masterIf: eth0
+  n3network:
+    masterIf: eth0
+  n4network:
+    masterIf: eth0
+
+free5gc-upf:
+  securityContext:
+    privileged: true
+    capabilities:
+      add: [NET_ADMIN]
+  upf:
+    cfgFiles:
+      upfcfg.yaml:
+        configuration:
+          pfcp:
+            addr: "192.168.49.2"   # Minikube node IP
+          gtpu:
+            addr: "192.168.49.2"
+          dnnList:
+            - dnn: internet
+              cidr: 10.60.0.0/24
+    resources:
+      requests: {cpu: 500m,  memory: 512Mi}
+      limits:   {cpu: 2000m, memory: 2Gi}
+
+free5gc-smf:
+  smf:
+    cfgFiles:
+      smfcfg.yaml:
+        configuration:
+          pfcp:
+            addr: "192.168.49.2"
+    resources:
+      requests: {cpu: 200m,  memory: 256Mi}
+      limits:   {cpu: 1000m, memory: 1Gi}
+\end{lstlisting}
+
+The \texttt{NET\_ADMIN} capability and \texttt{privileged: true} are required by the \gls{upf} to manage the \texttt{tun} and \texttt{gtp5g} interfaces at the kernel level. The \texttt{pfcp.addr} is set to the Minikube node \gls{ip} address (\texttt{192.168.49.2}).
+
+Free5GC is then installed with:
+
+\begin{lstlisting}[language=bash, caption={Installing Free5GC v3.3.0 via Helm}, label={lst:free5gc_install}]
+helm repo add towards5gs \
+  https://raw.githubusercontent.com/towards5gs/5gcharts/main
+helm repo update
+helm install free5gc towards5gs/free5gc \
+  -n free5gc --create-namespace \
+  -f deploy/values-minikube.yaml
+\end{lstlisting}
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Screenshot of `kubectl get pods -n free5gc`
+% showing all NF pods (AMF, SMF, UPF, NRF, AUSF, UDM, PCF, UDR,
+% MongoDB) in Running state.
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/chap4/kubectl_get_pods_free5gc.png}
+  \fbox{\textit{[Screenshot suggestion: \texttt{kubectl get pods -n free5gc} showing all NFs in Running state after Helm install]}}
+  \caption{Free5GC pods in the \texttt{free5gc} namespace after Helm installation}
+  \label{fig:free5gc_pods}
+\end{figure}
+
+\subsection{Network Attachment Definitions}
+
+After Free5GC is installed, the Multus \texttt{NetworkAttachmentDefinition} resources are applied to enable multi-interface networking for the \gls{upf} and \gls{smf} pods:
+
+\begin{lstlisting}[language=bash, caption={Applying Multus network configurations}, label={lst:apply_nad}]
+kubectl apply -f deploy/network/
+\end{lstlisting}
+
+Four definitions are created: \texttt{n3network} and \texttt{n4network} for the \gls{upf} (GTP-U and \gls{pfcp}), \texttt{n4network} for the \gls{smf}, and \texttt{n6network} for data-plane egress. The \texttt{host-local} \gls{ip}AM plugin is used so that each \gls{upf} replica receives a deterministic, consecutive \gls{ip} address, which is essential for the dynamic SMF reconfiguration described in Section~\ref{sec:upf_watcher}.
+
+\subsection{System Startup Procedure}
+\label{sec:startup}
+
+The startup of the system is non-trivial because the \gls{smf} must know the N4 and N3 \gls{ip} addresses of each \gls{upf} pod at boot time. These addresses are only known after the \gls{upf} pod has been scheduled and its Multus interfaces have been allocated. The \texttt{start-free5gc.sh} script automates this multi-step boot sequence, whose flow is represented in Figure~\ref{fig:startup_flow}.
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Flowchart of the startup sequence:
+%   Reset KEDA scalers (pause)
+%   → Scale UPF to 0 → Flush host-local IP pools (minikube ssh)
+%   → Scale UPF to 1 → Wait for Running + Multus annotations
+%   → Extract N4/N3 IPs → Update SMF ConfigMap
+%   → Restart SMF → Wait for PFCP association
+%   → Configure iptables MASQUERADE
+%   → Restart AMF → Restart gNB → Start UE pods
+%   → Wait for uesimtun0 tunnels → Unpause KEDA
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=0.75\linewidth]{figures/chap4/startup_flowchart.pdf}
+  \fbox{\textit{[Figure suggestion: Flowchart of the start-free5gc.sh boot sequence with decision diamonds for PFCP timeout and retry logic]}}
+  \caption{Automated startup sequence of the Free5GC testbed}
+  \label{fig:startup_flow}
+\end{figure}
+
+The key steps are:
+
+\paragraph{Step 1 — IP Pool Reset.} Because the \texttt{host-local} \gls{ip}AM plugin caches allocated addresses on the Minikube node filesystem, stale entries from previous runs must be cleared before restarting the \gls{upf}. This is performed via \texttt{minikube ssh}:
+
+\begin{lstlisting}[language=bash, caption={Flushing host-local IPAM caches for UPF interfaces}, label={lst:ipam_flush}]
+minikube ssh "sudo find /var/lib/cni/networks/\
+  n4network-free5gc-free5gc-upf/ \
+  -type f ! -name 'last_reserved_ip.0' ! -name 'lock' \
+  -delete"
+minikube ssh "sudo bash -c 'echo -n 10.100.51.0 > \
+  /var/lib/cni/networks/n4network-free5gc-free5gc-upf/\
+  last_reserved_ip.0'"
+\end{lstlisting}
+
+This ensures that the first \gls{upf} pod always receives the address \texttt{10.100.51.1} on N4 and \texttt{10.100.51.33} on N3, making the SMF configuration deterministic.
+
+\paragraph{Step 2 — UPF IP Extraction.} Once the \gls{upf} pod is Running, its Multus-assigned \gls{ip} addresses are extracted by parsing the \texttt{k8s.v1.cni.cncf.io/network-status} pod annotation:
+
+\begin{lstlisting}[language=bash, caption={Extracting the UPF N4 IP address from pod annotations}, label={lst:upf_ip_extract}]
+N4_IP=$(kubectl get pod -n free5gc -l nf=upf -o json \
+  | python3 -c "
+import json, sys
+pods = json.load(sys.stdin)['items']
+for p in pods:
+    if p['status']['phase'] != 'Running': continue
+    nets = json.loads(p['metadata']['annotations'].get(
+        'k8s.v1.cni.cncf.io/network-status','[]'))
+    for n in nets:
+        if 'n4' in n['name'] and n.get('ips'):
+            print(n['ips'][0]); raise SystemExit
+")
+\end{lstlisting}
+
+\paragraph{Step 3 — SMF Reconfiguration.} The extracted N4 and N3 addresses are injected into the \gls{smf} ConfigMap by the \texttt{update-smf-upf.py} script, which uses regular expressions to patch the \texttt{smfcfg.yaml} data in-place. The \gls{smf} deployment is then rolled out to pick up the new configuration.
+
+\paragraph{Step 4 — PFCP Association Verification.} After the \gls{smf} restarts, the script polls its logs for the string \texttt{"PFCP Association Setup Accepted"} as evidence of a successful N4 session between \gls{smf} and \gls{upf}. If this string does not appear within 60 seconds, a second reconfiguration attempt is made automatically.
+
+\paragraph{Step 5 — iptables NAT.} To allow \gls{ue} data traffic to reach the public internet through the Minikube node, a MASQUERADE rule is added to the \texttt{nat} table:
+
+\begin{lstlisting}[language=bash, caption={Configuring NAT masquerading for UE traffic}, label={lst:iptables_nat}]
+minikube ssh "sudo iptables -t nat -F POSTROUTING"
+minikube ssh "sudo iptables -t nat -A POSTROUTING \
+  -s 10.1.0.0/16 ! -d 10.0.0.0/8 -j MASQUERADE"
+\end{lstlisting}
+
+\paragraph{Step 6 — KEDA Unpause.} \gls{keda} scalers are paused during startup to prevent premature scaling events. Once all components are healthy, the pause annotations are removed and autoscaling becomes active.
+
+% ============================================================
+\section{5G RAN Simulation with UERANSIM}
+\label{sec:ueransim_deploy}
+% ============================================================
+
+\subsection{Overview of UERANSIM}
+
+UERANSIM~\cite{ueransim} is an open-source 5G standalone \gls{gnb} and \gls{ue} simulator. It implements the 3GPP NR \gls{nas} protocol stack and the NGAP interface to connect to a real \gls{amf}, making it suitable for functional testing of 5G core networks without physical radio hardware.
+
+\subsection{gNB Configuration}
+
+A single \gls{gnb} is deployed as a Kubernetes pod, configured with the parameters shown in Table~\ref{tab:gnb_config}.
+
+\begin{table}[H]
+  \centering
+  \caption{gNB configuration parameters}
+  \label{tab:gnb_config}
+  \begin{tabularx}{\linewidth}{lX}
+    \toprule
+    \textbf{Parameter}  & \textbf{Value} \\
+    \midrule
+    \gls{mcc}           & 208 (France, used as a test PLMN) \\
+    \gls{mnc}           & 93 \\
+    NCI                 & \texttt{0x000000010} \\
+    TAC                 & 1 \\
+    Supported S-\gls{nssai} & SST=1, SD=0x010203 \\
+    N2 interface \gls{ip} & 10.100.50.250 (Multus, NGAP towards AMF) \\
+    N3 interface \gls{ip} & 10.100.50.236 (Multus, GTP-U towards UPF) \\
+    AMF N2 address      & 10.100.50.249:38412 \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Subscriber Provisioning}
+
+Before a \gls{ue} can register with the network, its subscription data must exist in the Free5GC MongoDB database. The \texttt{provision-ues.py} script automates the creation of all required MongoDB documents across seven collections, using the 5G-AKA authentication method.
+
+\begin{lstlisting}[language=python, caption={Core subscriber provisioning template in provision-ues.py}, label={lst:provision_template}]
+TEMPLATE = {
+    "permanentKey": {
+        "permanentKeyValue": "8baf473f2f8fd09487cccbd7097c6862",
+        "encryptionAlgorithm": 0,
+        "encryptionKey": 0,
+    },
+    "sequenceNumber": "000000000023",
+    "authenticationManagementField": "8000",
+    "opc": {
+        "opcValue": "8e27b6af0e692e750f32667a3b14605d",
+        "encryptionAlgorithm": 0,
+        "encryptionKey": 0,
+    },
+    "authenticationMethod": "5G_AKA"
+}
+\end{lstlisting}
+
+Each subscriber is assigned an \gls{imsi} of the form \texttt{imsi-20893XXXXXXXXXX} (15 digits), with the 10-digit \gls{msin} encoded as a zero-padded decimal index. Additionally, SM subscription data (DNN \texttt{internet}, SST=1, SD=0x010203), AM subscription data, and \gls{pcf} policy data are inserted. Fifty subscribers (\texttt{006}–\texttt{055}) are pre-provisioned:
+
+\begin{lstlisting}[language=bash, caption={Provisioning 50 subscribers starting at index 6}, label={lst:provision_cmd}]
+python3 scripts/provision-ues.py --count 50 --start 6
+\end{lstlisting}
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Screenshot of the Free5GC WebConsole (if used)
+% or the output of `mongosh free5gc --eval
+% "db['subscriptionData.authenticationData.
+%  authenticationSubscription'].find({},{ueId:1,_id:0})"
+% showing the provisioned IMSIs.
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=0.8\linewidth]{figures/chap4/mongodb_subscribers.png}
+  \fbox{\textit{[Screenshot suggestion: MongoDB output listing provisioned IMSI entries, or Free5GC WebConsole subscriber list]}}
+  \caption{Provisioned subscribers in the Free5GC MongoDB database}
+  \label{fig:mongodb_subscribers}
+\end{figure}
+
+\subsection{Static UE Deployments}
+
+Four \gls{ue} pods (\texttt{ueransim-ue-002} through \texttt{ueransim-ue-005}) are deployed as static Kubernetes Deployments via the UERANSIM Helm chart. Each pod runs the \texttt{nr-ue} binary with a unique \gls{supi}/\gls{imsi}. Upon successful registration, the pod creates a \texttt{uesimtun0} TUN interface carrying the assigned \gls{pdu} session address (e.g., \texttt{10.60.0.1/32}).
+
+\subsection{Dynamic UE Lifecycle — deploy-ues.py}
+\label{sec:deploy_ues}
+
+For scenarios requiring more than 4 \glspl{ue}, the \texttt{deploy-ues.py} script dynamically clones the \texttt{ueransim-ue-002} Deployment manifest, substituting the \gls{imsi}, pod name, and ConfigMap reference for each additional \gls{ue}. It also cleans up MongoDB session state when a \gls{ue} is deleted.
+
+\begin{lstlisting}[language=python, caption={Building a UE Deployment manifest by cloning the template (deploy-ues.py)}, label={lst:deploy_ues_build}]
+def build_manifest(index, template):
+    name = f"ueransim-ue-{index:03d}"
+    imsi = f"20893{index:010d}"   # 15-digit IMSI
+    d = copy.deepcopy(template)
+    d["metadata"]["name"] = name
+    d["spec"]["selector"]["matchLabels"]["app"] = name
+    d["spec"]["template"]["metadata"]["labels"]["app"] = name
+    for c in d["spec"]["template"]["spec"]["containers"]:
+        for e in c.get("env", []):
+            if e["name"] == "IMSI":
+                e["value"] = imsi
+    # Update ConfigMap volume reference
+    for vol in d["spec"]["template"]["spec"].get("volumes", []):
+        if "configMap" in vol and "ue" in vol["configMap"]["name"].lower():
+            vol["configMap"]["name"] = vol["configMap"]["name"]\
+                .replace("002", f"{index:03d}")
+    return d, name, imsi
+\end{lstlisting}
+
+After deploying, the script waits for readiness using a polling loop on \texttt{kubectl get deployment ... -o jsonpath=\{.status.readyReplicas\}}, with a configurable timeout.
+
+% ============================================================
+\section{Custom Prometheus Exporters}
+\label{sec:exporters}
+% ============================================================
+
+Standard Kubernetes metrics (CPU, memory, network I/O) are insufficient for driving meaningful 5G network scaling. Three custom Prometheus exporters were developed and containerised to expose application-layer \gls{5G} metrics.
+
+\subsection{PDU Session Exporter}
+\label{sec:pdu_exporter}
+
+The PDU session exporter monitors the \gls{smf} pod logs in real time to count active \gls{pdu} sessions. It does so by querying the Kubernetes \gls{api} for running \gls{smf} pods and fetching their recent logs, then counting the difference between session establishment and release events.
+
+\begin{lstlisting}[language=python, caption={PDU session counting logic in exporter.py}, label={lst:pdu_exporter}]
+from prometheus_client import start_http_server, Gauge
+import requests, time
+
+pdu_sessions = Gauge("free5gc_pdu_sessions_total",
+                     "Active PDU sessions")
+
+def count_pdu_sessions():
+    # Authenticate with in-cluster service-account token
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
+        token = f.read()
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as f:
+        namespace = f.read().strip()
+    headers = {"Authorization": "Bearer " + token}
+    ca = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+    url = (f"https://kubernetes.default.svc/api/v1/namespaces/"
+           f"{namespace}/pods?labelSelector=nf=smf")
+    pods = requests.get(url, headers=headers, verify=ca)\
+                   .json().get("items", [])
+
+    total = 0
+    for pod in pods:
+        if pod["status"]["phase"] != "Running":
+            continue
+        log_url = (f"https://kubernetes.default.svc/api/v1/namespaces/"
+                   f"{namespace}/pods/{pod['metadata']['name']}/"
+                   f"log?container=smf&sinceSeconds=300")
+        logs = requests.get(log_url, headers=headers, verify=ca).text
+        established = logs.count("Sending PFCP Session Establishment Request")
+        released    = logs.count("In HandlePDUSessionSMContextRelease")
+        total      += max(0, established - released)
+    return total
+
+start_http_server(8080)
+while True:
+    pdu_sessions.set(count_pdu_sessions())
+    time.sleep(15)
+\end{lstlisting}
+
+The exporter uses the Kubernetes in-cluster \gls{api} (via the pod's service-account token) rather than an external \texttt{kubeconfig}, making it self-contained within the cluster. It exposes the \texttt{free5gc\_pdu\_sessions\_total} metric on port \texttt{8080}, which Prometheus scrapes every 15 seconds.
+
+\subsection{SMF Request Exporter}
+
+A second exporter tracks two complementary metrics:
+\begin{itemize}
+  \item \texttt{free5gc\_pdu\_session\_requests\_total} — a \emph{Counter} that increments each time a new \gls{pdu} session establishment request is detected in the \gls{smf} logs (detected by the pattern \texttt{HandlePDUSessionEstablishmentRequest}).
+  \item \texttt{free5gc\_pdu\_sessions\_active} — a \emph{Gauge} tracking currently active sessions by counting allocated \gls{ip} addresses minus releases.
+\end{itemize}
+
+Unlike the PDU exporter, this component launches a dedicated background thread per \gls{smf} pod, allowing it to track multiple replicas concurrently as the \gls{smf} scales out.
+
+\begin{lstlisting}[language=python, caption={Multi-threaded SMF pod monitoring (smf-request-exporter.py)}, label={lst:smf_exporter}]
+def watch_smf_pods():
+    headers, ca, namespace = get_k8s_headers()
+    active_threads = {}
+    while True:
+        pods = get_smf_pods(headers, ca, namespace)
+        for pod in pods:
+            if pod not in active_threads \
+               or not active_threads[pod].is_alive():
+                t = threading.Thread(
+                    target=stream_smf_logs,
+                    args=(pod, namespace, headers, ca),
+                    daemon=True)
+                t.start()
+                active_threads[pod] = t
+        time.sleep(15)
+\end{lstlisting}
+
+This design is critical for correctness: when the \gls{smf} scales from 1 to 3 replicas under heavy load, a new monitoring thread is automatically spawned for each new pod within 15 seconds.
+
+\subsection{UPF Throughput Sidecar}
+\label{sec:upf_sidecar}
+
+The \gls{upf} throughput is measured by a sidecar container injected alongside the \gls{upf} main container in the same pod. The sidecar reads the byte counters of the \texttt{n3} network interface from the Linux kernel's \texttt{sysfs} virtual filesystem, computes a byte-per-second rate over a 15-second window, and exposes the result as \texttt{free5gc\_upf\_throughput\_bps}.
+
+\begin{lstlisting}[language=python, caption={UPF N3 interface throughput measurement (sidecar.py)}, label={lst:upf_sidecar}]
+from prometheus_client import start_http_server, Gauge
+import time
+
+throughput = Gauge('free5gc_upf_throughput_bps',
+                   'UPF N3 throughput in bytes per second')
+
+def read_bytes():
+    total = 0
+    for stat in ['rx_bytes', 'tx_bytes']:
+        try:
+            with open('/sys/class/net/n3/statistics/' + stat) as f:
+                total += int(f.read().strip())
+        except: pass
+    return total
+
+start_http_server(8081)
+interval = 15
+while True:
+    b1 = read_bytes()
+    time.sleep(interval)
+    b2 = read_bytes()
+    throughput.set(max(0, (b2 - b1) / interval))
+\end{lstlisting}
+
+The sidecar shares the pod's network namespace, so it can directly observe the \texttt{n3} interface created by Multus. This approach avoids any complex inter-pod communication and provides an accurate, kernel-level throughput measurement. The exporter is containerised in a minimal \texttt{python:3.11-slim} image:
+
+\begin{lstlisting}[language=docker, caption={Dockerfile for the UPF sidecar exporter}, label={lst:upf_sidecar_dockerfile}]
+FROM python:3.11-slim
+RUN pip install prometheus-client
+COPY sidecar.py /app/sidecar.py
+CMD ["python3", "/app/sidecar.py"]
+\end{lstlisting}
+
+Table~\ref{tab:exporters_summary} summarises all three exporters.
+
+\begin{table}[H]
+  \centering
+  \caption{Summary of custom Prometheus exporters}
+  \label{tab:exporters_summary}
+  \begin{tabularx}{\linewidth}{lllX}
+    \toprule
+    \textbf{Exporter}    & \textbf{Port} & \textbf{Metric name} & \textbf{Description} \\
+    \midrule
+    PDU session exporter & 8080 & \texttt{free5gc\_pdu\_sessions\_total} & Active \gls{pdu} sessions (log parsing) \\
+    SMF request exporter & 8001 & \texttt{free5gc\_pdu\_session\_requests\_total} & Cumulative session requests (Counter) \\
+                         &      & \texttt{free5gc\_pdu\_sessions\_active} & Active sessions (Gauge) \\
+    UPF sidecar          & 8081 & \texttt{free5gc\_upf\_throughput\_bps} & N3 interface throughput (bytes/s) \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Prometheus UI screenshot showing the three custom
+% metrics being scraped (Targets page or Graph page).
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/chap4/prometheus_targets.png}
+  \fbox{\textit{[Screenshot suggestion: Prometheus \texttt{/targets} page showing the three custom exporters in UP state, with last-scrape timestamps]}}
+  \caption{Custom Free5GC exporters as seen by Prometheus}
+  \label{fig:prometheus_targets}
+\end{figure}
+
+% ============================================================
+\section{Autoscaling with KEDA}
+\label{sec:keda_autoscaling}
+% ============================================================
+
+\subsection{Autoscaling Architecture}
+
+\gls{keda} acts as a bridge between Prometheus metrics and the Kubernetes \gls{hpa}. It continuously polls Prometheus at a configured interval and, when a metric crosses a defined threshold, instructs the underlying \gls{hpa} to scale the target Deployment. Figure~\ref{fig:keda_architecture} illustrates the control loop.
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Control loop diagram:
+%   [Exporters] → (scrape) → [Prometheus]
+%   [KEDA ScaledObject] → (PromQL query) → [Prometheus]
+%   [KEDA] → (scale decision) → [Kubernetes HPA]
+%   [HPA] → (scale) → [SMF/UPF Deployments]
+%   [UPF Deployment] → (new pod) → [UPF Watcher]
+%   [UPF Watcher] → (patch ConfigMap + restart SMF) → [SMF Deployment]
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=0.85\linewidth]{figures/chap4/keda_control_loop.pdf}
+  \fbox{\textit{[Figure suggestion: KEDA control loop diagram — Prometheus → KEDA → HPA → Deployments → UPF Watcher feedback loop]}}
+  \caption{\gls{keda}-driven autoscaling control loop}
+  \label{fig:keda_architecture}
+\end{figure}
+
+\subsection{SMF ScaledObject}
+\label{sec:smf_scaled}
+
+The \gls{smf} is scaled horizontally based on the total number of active \gls{pdu} sessions, with a threshold of 4 sessions per replica. This directly maps the 3GPP concept of session management capacity to a Kubernetes scaling policy.
+
+\begin{lstlisting}[language=yaml, caption={KEDA ScaledObject for the SMF (smf-scaledobject-v2.yaml)}, label={lst:smf_scaledobject}]
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: smf-scaler
+  namespace: free5gc
+spec:
+  scaleTargetRef:
+    name: free5gc-free5gc-smf-smf
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  pollingInterval: 15      # Query Prometheus every 15 seconds
+  cooldownPeriod:  30      # Wait 30s before scaling down
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 120
+          policies:
+          - type: Pods
+            value: 1          # Add 1 replica at a time
+            periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+          - type: Pods
+            value: 1          # Remove 1 replica at a time
+            periodSeconds: 30
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-kube-prometheus-prometheus\
+        .monitoring.svc.cluster.local:9090
+      metricName: free5gc_pdu_sessions_total
+      query: free5gc_pdu_sessions_total
+      threshold: "4"
+\end{lstlisting}
+
+The stabilisation windows (120 s for scale-up, 60 s for scale-down) prevent flapping by requiring that the metric remains above or below the threshold for a sustained period before a scaling action is taken. With a threshold of 4, the expected replica count for $N$ active sessions is $\lceil N/4 \rceil$, capped at 5.
+
+\subsection{UPF ScaledObject}
+\label{sec:upf_scaled}
+
+The \gls{upf} uses a \emph{multi-trigger} policy: it scales out when any of three conditions is met—a burst of incoming \gls{pdu} session requests, a sustained throughput above 1 Mbps, or \gls{cpu} utilisation above 80\%.
+
+\begin{lstlisting}[language=yaml, caption={KEDA ScaledObject for the UPF with three triggers (upf-scaledobject-v3.yaml)}, label={lst:upf_scaledobject}]
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: upf-scaler
+  namespace: free5gc
+spec:
+  scaleTargetRef:
+    name: free5gc-free5gc-upf-upf
+  minReplicaCount: 1      # Always at least 1 replica (no scale-to-zero)
+  maxReplicaCount: 4
+  pollingInterval: 10
+  cooldownPeriod:  30
+  triggers:
+  # Trigger 1: burst of new PDU session requests
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-kube-prometheus-prometheus\
+        .monitoring.svc.cluster.local:9090
+      metricName: free5gc_pdu_session_requests_total
+      query: increase(free5gc_pdu_session_requests_total[30s])
+      threshold: "1"
+  # Trigger 2: sustained high throughput
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-kube-prometheus-prometheus\
+        .monitoring.svc.cluster.local:9090
+      metricName: free5gc_upf_throughput_bps
+      query: sum(free5gc_upf_throughput_bps)
+      threshold: "1000000"     # 1 Mbps
+  # Trigger 3: high CPU utilisation
+  - type: cpu
+    metricType: Utilization
+    metadata:
+      value: "80"
+\end{lstlisting}
+
+The \texttt{increase()} PromQL function measures the rate of change of the session request counter over 30 seconds. A value above 1 indicates at least one new session request in the window, triggering an immediate scale-out to handle the connection burst proactively.
+
+\subsection{UPF Watcher — Dynamic SMF Reconfiguration}
+\label{sec:upf_watcher}
+
+A critical challenge of scaling the \gls{upf} in a 5G context is that the \gls{smf} must know the N4 (\gls{pfcp}) and N3 (GTP-U) addresses of \emph{every} \gls{upf} replica. When KEDA adds a new \gls{upf} pod, the \gls{smf} configuration becomes stale and must be updated and the \gls{smf} restarted.
+
+The \texttt{upf-watcher} is a continuously running Python pod that monitors the list of running \gls{upf} pods. When a change is detected (a new pod appears), it waits 20 seconds for the pod's Multus interfaces to be fully configured, then:
+
+\begin{enumerate}
+  \item Reads the current \gls{smf} ConfigMap.
+  \item Extracts N4 and N3 \gls{ip} addresses from each running \gls{upf} pod's annotations.
+  \item Updates the \gls{smf} ConfigMap with the new \gls{upf} list using regex substitution.
+  \item Applies the updated ConfigMap via \texttt{kubectl apply}.
+  \item Triggers a rolling restart of the \gls{smf} Deployment and waits for readiness.
+\end{enumerate}
+
+\begin{lstlisting}[language=python, caption={UPF Watcher main monitoring loop (upf-watcher.py)}, label={lst:upf_watcher}]
+last_ips = []
+while True:
+    time.sleep(10)
+    try:
+        current = get_upf_ips()    # Parse pod annotations
+        if current != last_ips:
+            print(f"[WATCHER] Change: {last_ips} -> {current}")
+            if current and not last_ips:
+                # Wake-up: new UPF pod appeared
+                print("[WATCHER] New UPF — waiting 20s...")
+                time.sleep(20)
+                resync_and_restart()
+            elif not current:
+                print("[WATCHER] Scale-to-zero UPF")
+            last_ips = current
+    except Exception as e:
+        print(f"[WATCHER] Error: {e}")
+\end{lstlisting}
+
+The watcher requires \gls{rbac} permissions to read pods and ConfigMaps and to patch Deployments. These are granted through a dedicated \texttt{ServiceAccount}, \texttt{Role}, and \texttt{RoleBinding} defined in \texttt{upf-watcher-deployment.yaml}.
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Timeline diagram showing a UPF scale-out event:
+%   t=0:  KEDA detects throughput > 1 Mbps
+%   t=10: New UPF pod created, watcher detects change
+%   t=30: Watcher reads pod annotations, updates ConfigMap
+%   t=35: SMF restart initiated
+%   t=60: SMF Running, PFCP association confirmed
+%   t=65: Second UPF pod active
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/chap4/upf_scaleout_timeline.pdf}
+  \fbox{\textit{[Figure suggestion: Timeline/sequence diagram of a UPF scale-out event: KEDA decision → pod creation → watcher detection → SMF reconfiguration → PFCP re-association]}}
+  \caption{UPF scale-out sequence with dynamic SMF reconfiguration}
+  \label{fig:upf_scaleout_timeline}
+\end{figure}
+
+% ============================================================
+\section{Experimental Scenarios}
+\label{sec:scenarios}
+% ============================================================
+
+Three load scenarios were designed to stress the autoscaling system at increasing levels of concurrency. All scenarios share a common measurement infrastructure: the \texttt{traffic-gen.py} script generates \gls{icmp} (ping) traffic through the \gls{ue} tunnel interfaces at 200 packets/s with 1400-byte payloads, and \texttt{metrics-collector.py} queries Prometheus every 5 seconds, recording seven metrics into a \texttt{CSV} file for each scenario.
+
+\subsection{Metrics Collected}
+
+Table~\ref{tab:metrics_collected} lists the Prometheus queries used for data collection.
+
+\begin{table}[H]
+  \centering
+  \caption{Metrics collected by metrics-collector.py}
+  \label{tab:metrics_collected}
+  \begin{tabularx}{\linewidth}{lX}
+    \toprule
+    \textbf{Column (CSV)}  & \textbf{PromQL expression} \\
+    \midrule
+    \texttt{upf\_replicas}   & \texttt{kube\_deployment\_spec\_replicas\{deployment="free5gc-free5gc-upf-upf"\}} \\
+    \texttt{smf\_replicas}   & \texttt{kube\_deployment\_spec\_replicas\{deployment="free5gc-free5gc-smf-smf"\}} \\
+    \texttt{pdu\_sessions}   & \texttt{free5gc\_pdu\_sessions\_total} \\
+    \texttt{pdu\_requests}   & \texttt{increase(free5gc\_pdu\_session\_requests\_total[30s])} \\
+    \texttt{upf\_throughput} & \texttt{sum(free5gc\_upf\_throughput\_bps)} \\
+    \texttt{cpu\_smf\_mc}    & \texttt{sum(rate(container\_cpu\_usage\_seconds\_total\{pod=\textasciitilde"free5gc-free5gc-smf.*"\}[1m]))*1000} \\
+    \texttt{cpu\_upf\_mc}    & \texttt{sum(rate(container\_cpu\_usage\_seconds\_total\{pod=\textasciitilde"free5gc-free5gc-upf.*"\}[1m]))*1000} \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+The traffic generation is executed in parallel across all \gls{ue} pods using Python's \texttt{ThreadPoolExecutor}:
+
+\begin{lstlisting}[language=python, caption={Parallel traffic generation across UE pods (traffic-gen.py)}, label={lst:traffic_gen}]
+with ThreadPoolExecutor(max_workers=len(pods)) as ex:
+    futures = {
+        ex.submit(run_ping, p, args.duration,
+                  args.pps, args.size): p
+        for p in pods
+    }
+    for f in as_completed(futures):
+        results.append(f.result())
+\end{lstlisting}
+
+Each \gls{ue} pod sends \texttt{200 pkt/s × 1400 B = 280 kB/s} of \gls{icmp} traffic, totalling approximately 1.1 Mbps for 4 \glspl{ue}, 3 Mbps for 10 \glspl{ue}, and up to 5.5 Mbps for 20 \glspl{ue}.
+
+\subsection{Scenario 1: Baseline — 4 UEs}
+
+This scenario uses the 4 pre-deployed static \gls{ue} pods (\texttt{ueransim-ue-002} to \texttt{ueransim-ue-005}). No dynamic \gls{ue} deployment is needed. Traffic runs for 180 seconds at the full rate. This scenario establishes the baseline resource consumption with a low user count.
+
+\begin{lstlisting}[language=make, caption={Makefile target for the 4-UE scenario}, label={lst:scenario_4ues}]
+scenario-4ues: setup check-prometheus
+    @echo "=== SCENARIO 1 : 4 UEs ==="
+    kubectl wait --for=condition=Ready pod \
+      -l app.kubernetes.io/name=upf -n free5gc --timeout=180s
+    python3 scripts/traffic-gen.py \
+      --ues 4 --duration 180 --pps 200 --size 1400 &
+    python3 scripts/metrics-collector.py \
+      --scenario 4ues --duration 180 --interval 5 \
+      --output results/scenario-4ues.csv
+    @wait
+\end{lstlisting}
+
+\subsection{Scenario 2: Medium Load — 10 UEs}
+
+Six additional \gls{ue} pods (\texttt{ueransim-ue-006} to \texttt{ueransim-ue-011}) are dynamically deployed using \texttt{deploy-ues.py}. A 45-second wait is introduced to allow all \gls{pdu} sessions to be established before traffic starts. After the 180-second measurement window, the dynamic \glspl{ue} are deleted.
+
+\begin{lstlisting}[language=make, caption={Makefile target for the 10-UE scenario}, label={lst:scenario_10ues}]
+scenario-10ues: setup check-prometheus
+    @echo "=== SCENARIO 2 : 10 UEs ==="
+    python3 scripts/deploy-ues.py \
+      --count 6 --start 6 --timeout 180
+    @echo "[INFO] Waiting 45s for PDU session establishment..."
+    sleep 45
+    python3 scripts/traffic-gen.py \
+      --ues 10 --duration 180 --pps 200 --size 1400 &
+    python3 scripts/metrics-collector.py \
+      --scenario 10ues --duration 180 --interval 5 \
+      --output results/scenario-10ues.csv
+    @wait
+    python3 scripts/deploy-ues.py --delete --start 6 --count 6
+\end{lstlisting}
+
+\subsection{Scenario 3: High Load with Progressive Scale-Down — 20 UEs}
+
+This is the most complex scenario. Sixteen additional \gls{ue} pods are deployed, then 60 seconds into the measurement, \glspl{ue} are removed in batches of 4 every 45 seconds, creating a progressive load decrease. This tests both the scale-out behaviour (when 20 \glspl{ue} are active) and the scale-down behaviour (as \glspl{ue} are removed).
+
+\begin{lstlisting}[language=make, caption={Makefile target for the 20-UE progressive scale-down scenario}, label={lst:scenario_20ues}]
+scenario-20ues: setup check-prometheus
+    @echo "=== SCENARIO 3 : 20 UEs ==="
+    python3 scripts/deploy-ues.py \
+      --count 16 --start 6 --timeout 300
+    sleep 60   # Wait for all PDU sessions
+    python3 scripts/traffic-gen.py \
+      --ues 20 --duration 300 --pps 200 --size 1400 &
+    python3 scripts/metrics-collector.py \
+      --scenario 20ues --duration 300 --interval 5 \
+      --output results/scenario-20ues.csv &
+    sleep 60   # Let load peak first
+    # Progressive scale-down (4 UEs every 45s)
+    python3 scripts/deploy-ues.py --delete --start 18 --count 4
+    sleep 45
+    python3 scripts/deploy-ues.py --delete --start 14 --count 4
+    sleep 45
+    python3 scripts/deploy-ues.py --delete --start 10 --count 4
+    sleep 45
+    python3 scripts/deploy-ues.py --delete --start 6  --count 4
+    @wait
+\end{lstlisting}
+
+% ============================================================
+\section{Results and Analysis}
+\label{sec:results}
+% ============================================================
+
+\subsection{Summary Table}
+
+Table~\ref{tab:results_summary} summarises the peak values observed in each scenario across all collected metrics.
+
+\begin{table}[H]
+  \centering
+  \caption{Peak metric values per scenario}
+  \label{tab:results_summary}
+  \begin{tabularx}{\linewidth}{lrrrrr}
+    \toprule
+    \textbf{Scenario} & \textbf{UE count} & \textbf{UPF max replicas} & \textbf{SMF max replicas} & \textbf{Peak BW} & \textbf{CPU SMF peak} \\
+    \midrule
+    Scenario 1 & 4  & 4 & 1 & $\sim$858 kB/s & $\sim$3 mc \\
+    Scenario 2 & 10 & 4 & 2 & $\sim$3.2 MB/s & $\sim$11 mc \\
+    Scenario 3 & 20 & 4 & 3--5 & $\sim$3.2 MB/s & $\sim$65 mc \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Scenario 1 Analysis: 4 UEs (Baseline)}
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Time-series plot with two Y-axes:
+%   Left:  UPF replicas (step function, 2→4)
+%          SMF replicas (flat at 1)
+%   Right: UPF throughput (bps, ramps up to ~850 kB/s)
+%   X-axis: elapsed time (seconds, 0–180)
+%   Mark the KEDA scale-out event with a vertical dashed line.
+%   Data source: results/scenario-4ues.csv
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/chap4/scenario4ues_timeseries.pdf}
+  \fbox{\textit{[Figure suggestion: Time-series plot of Scenario 1 (4 UEs) — UPF/SMF replicas (left axis) and UPF throughput (right axis) vs.\ time. Data from scenario-4ues.csv]}}
+  \caption{Scenario 1 (4 UEs): replica count and throughput over time}
+  \label{fig:scenario_4ues}
+\end{figure}
+
+In the baseline scenario, traffic generation drives the \gls{upf} throughput from near-zero to approximately \textbf{858 kB/s} within the first 30 seconds. This crosses the 1 Mbps KEDA threshold only briefly, causing the \gls{upf} replica count to jump from 2 to \textbf{4} (the configured maximum). The \gls{smf} remains at \textbf{1} replica throughout, consistent with having only 4 active \gls{pdu} sessions (below the 4-session threshold for a second replica). SMF \gls{cpu} consumption is negligible ($<$ 3 mc), confirming that at low session counts, the \gls{smf} is not the bottleneck.
+
+\subsection{Scenario 2 Analysis: 10 UEs}
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Time-series plot for scenario-10ues.csv:
+%   - SMF replicas jump from 1 to 2 at ~t=40s (6 PDU sessions established)
+%   - UPF replicas remain at 4 (already at max from scenario 1 if not reset)
+%   - UPF throughput peaks at ~3.2 MB/s
+%   - PDU sessions: plateau at 6 (the 6 dynamically deployed UEs)
+%   Annotate the SMF scale-out event.
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/chap4/scenario10ues_timeseries.pdf}
+  \fbox{\textit{[Figure suggestion: Time-series plot of Scenario 2 (10 UEs) — highlighting the SMF scale-out from 1→2 replicas as PDU sessions exceed 4, and the UPF throughput reaching 3 Mbps]}}
+  \caption{Scenario 2 (10 UEs): SMF scale-out and throughput increase}
+  \label{fig:scenario_10ues}
+\end{figure}
+
+With 10 \glspl{ue}, 6 of which are dynamically provisioned, the \gls{pdu} session count reaches \textbf{6}, crossing the SMF threshold of 4. The \gls{smf} scales from \textbf{1 to 2} replicas approximately 40 seconds after the dynamic \glspl{ue} attach. UPF throughput climbs to \textbf{3.2 MB/s}, consistent with 10 simultaneous 200 pkt/s × 1400 B streams. The SMF \gls{cpu} rises to approximately \textbf{11 mc}, reflecting the additional signalling load of managing 10 active sessions.
+
+\subsection{Scenario 3 Analysis: 20 UEs with Progressive Scale-Down}
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Time-series plot for scenario-20ues.csv:
+%   - Show UPF replicas peaking at 4, SMF at 3-5
+%   - Show progressive scale-DOWN of UEs every 45s
+%   - Show corresponding decrease in throughput, PDU count, replicas
+%   - Mark each batch deletion event (t=60, 105, 150, 195s) with
+%     vertical dashed lines labelled "-4 UEs"
+%   The scale-down of NFs after KEDA cooldown period is key to show.
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/chap4/scenario20ues_timeseries.pdf}
+  \fbox{\textit{[Figure suggestion: Time-series plot of Scenario 3 (20 UEs) showing scale-out then progressive scale-down. Mark the four batch-deletion events at t=60, 105, 150, 195s. Show SMF replicas reaching 3–5 then decreasing]}}
+  \caption{Scenario 3 (20 UEs): peak load and progressive scale-down}
+  \label{fig:scenario_20ues}
+\end{figure}
+
+The most revealing scenario, Scenario 3, demonstrates bidirectional autoscaling. During peak load (all 20 \glspl{ue} active), the SMF \gls{cpu} reaches \textbf{65 mc} and the \gls{smf} scales to \textbf{3–5} replicas. As \glspl{ue} are removed in batches, the \gls{pdu} session count decreases, driving the \gls{smf} back towards 1 replica after the 60-second scale-down stabilisation window. The \gls{upf} throughput decreases proportionally, and \gls{keda}'s cooldown period (30 s) prevents oscillation during the descent.
+
+\subsection{Comparative Analysis}
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Grouped bar chart comparing all three scenarios:
+%   Groups: UPF_max, SMF_max, Peak_BW(normalised), CPU_SMF_peak
+%   Three bars per group (one per scenario, colour-coded)
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=0.9\linewidth]{figures/chap4/comparison_bars.pdf}
+  \fbox{\textit{[Figure suggestion: Grouped bar chart comparing UPF max replicas, SMF max replicas, peak throughput, and peak SMF CPU across the three scenarios]}}
+  \caption{Comparative metrics across the three autoscaling scenarios}
+  \label{fig:comparison}
+\end{figure}
+
+The results reveal several key findings:
+
+\begin{enumerate}
+  \item \textbf{SMF scales predictably with session count.} The SMF threshold of 4 sessions per replica produces consistent, predictable scaling: 1 replica for $\leq$4 sessions, 2 for 5–8, and 3–5 for higher counts. This proportional relationship validates the choice of the \texttt{free5gc\_pdu\_sessions\_total} metric as a scaling signal.
+
+  \item \textbf{UPF throughput-based scaling reacts quickly.} The UPF's multi-trigger policy (sessions burst + throughput + CPU) ensures it scales out within one KEDA polling interval (10 s) of traffic starting, before the throughput metric saturates. This is consistent with the design intent of proactive rather than reactive scaling.
+
+  \item \textbf{UPF replica count is bounded by the address pool.} The \texttt{host-local} IPAM pools are configured with 4 addresses each, limiting the UPF to \textbf{4 replicas maximum}. This was an intentional constraint matching the available test hardware capacity.
+
+  \item \textbf{Scale-down is conservative.} KEDA's 30-second cooldown and the \gls{hpa} stabilisation window of 60 seconds for scale-down ensure that transient load reductions do not immediately trigger de-provisioning, which would otherwise cause session disruption during brief traffic lulls.
+
+  \item \textbf{SMF restart overhead during UPF scale-out.} Each time the UPF watcher detects a new UPF pod, it restarts the SMF (approximately 30–60 seconds for readiness). This introduces a brief signalling interruption but is unavoidable given Free5GC's static N4 peer configuration model.
+\end{enumerate}
+
+\subsection{Grafana Dashboard}
+
+A custom Grafana dashboard was developed and exported as \texttt{dashboards/free5gc-dashboard.json}. It visualises all seven collected metrics in real time, providing the operator with immediate situational awareness of the autoscaling state.
+
+\begin{lstlisting}[language=bash, caption={Importing the custom Grafana dashboard}, label={lst:grafana_import}]
+kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80 &
+# Open http://localhost:3000, login admin/prom-operator
+# Import dashboards/free5gc-dashboard.json
+\end{lstlisting}
+
+% ---------------------------------------------------------------
+% SUGGESTED IMAGE: Screenshot of the Grafana dashboard showing:
+%   - UPF replicas panel (time series)
+%   - SMF replicas panel
+%   - PDU sessions gauge
+%   - UPF throughput graph
+%   - SMF CPU usage
+%   During one of the scenarios (ideally scenario-20ues for visual impact)
+% ---------------------------------------------------------------
+\begin{figure}[H]
+  \centering
+  % \includegraphics[width=\linewidth]{figures/chap4/grafana_dashboard.png}
+  \fbox{\textit{[Screenshot suggestion: Grafana dashboard during Scenario 3, showing all metric panels simultaneously — UPF/SMF replicas, PDU sessions, throughput, CPU — ideally during the peak load phase]}}
+  \caption{Custom Grafana monitoring dashboard during Scenario 3 execution}
+  \label{fig:grafana_dashboard}
+\end{figure}
+
+% ============================================================
+\section{Summary}
+\label{sec:chap4_summary}
+% ============================================================
+
+This chapter presented the complete implementation and experimental validation of an event-driven autoscaling system for the Free5GC 5G core network. Starting from a clean Ubuntu 22.04 installation on a single laptop, we:
+
+\begin{itemize}
+  \item Deployed a fully functional \gls{5G} standalone core network (Free5GC v3.3.0) on a single-node Kubernetes cluster (Minikube v1.38.1) using Helm, with multi-interface networking provided by Multus \gls{cni} and user-plane tunnelling via the \texttt{gtp5g} kernel module.
+  \item Simulated realistic \gls{5G} subscriber behaviour using UERANSIM, with up to 20 dynamically deployed \gls{ue} pods whose lifecycle—provisioning in MongoDB, Kubernetes Deployment creation, and session cleanup—is fully automated.
+  \item Developed and containerised three custom Prometheus exporters (PDU session counter, SMF request tracker, and UPF sidecar) that expose application-layer metrics unavailable from standard Kubernetes instrumentation.
+  \item Configured \gls{keda} \texttt{ScaledObject} resources for both the \gls{smf} (session-count-based) and the \gls{upf} (multi-trigger: session burst, throughput, and CPU), and implemented a \gls{upf} watcher that automatically reconfigures the \gls{smf} upon each scale-out event.
+  \item Executed three controlled experiments (4, 10, and 20 \glspl{ue}) and collected quantitative time-series data confirming that both NFs scale proportionally to load and recover gracefully as load decreases.
+\end{itemize}
+
+The results demonstrate the feasibility of applying cloud-native autoscaling principles to 5G core network functions, achieving dynamic resource allocation at the granularity of individual \gls{nf} replicas, driven by 5G-specific metrics rather than generic infrastructure signals. The automation scripts, Helm values, and \gls{keda} configurations developed in this project constitute a reproducible testbed that can be extended to include additional \glspl{nf}, more sophisticated scaling policies, or integration with a continuous integration pipeline for automated regression testing.
+
+% ============================================================
+%  Bibliography entries (add to your .bib file)
+% ============================================================
+%
+% @misc{free5gc,
+%   title  = {{Free5GC} -- Open Source 5G Core Network},
+%   author = {{free5gc Community}},
+%   year   = {2023},
+%   url    = {https://www.free5gc.org},
+%   note   = {Version 3.3.0}
+% }
+%
+% @misc{ueransim,
+%   title  = {{UERANSIM} -- Open Source 5G UE and RAN Simulator},
+%   author = {Ali Güngör},
+%   year   = {2023},
+%   url    = {https://github.com/aligungr/UERANSIM},
+%   note   = {Version 3.2.6}
+% }
+%
+% @misc{keda,
+%   title  = {{KEDA} -- Kubernetes Event-Driven Autoscaling},
+%   author = {{KEDA Community}},
+%   year   = {2023},
+%   url    = {https://keda.sh}
+% }
+%
+% @misc{minikube,
+%   title  = {{Minikube} -- Run Kubernetes Locally},
+%   author = {{Kubernetes Contributors}},
+%   year   = {2024},
+%   url    = {https://minikube.sigs.k8s.io}
+% }
+%
+% @misc{helm,
+%   title  = {{Helm} -- The Kubernetes Package Manager},
+%   author = {{Helm Contributors}},
+%   year   = {2024},
+%   url    = {https://helm.sh}
+% }
+%
+% @misc{multus,
+%   title  = {{Multus CNI} -- A CNI Meta-Plugin for Kubernetes},
+%   author = {{Intel Corporation}},
+%   year   = {2023},
+%   url    = {https://github.com/k8snetworkplumbingwg/multus-cni}
+% }
+%
+% @misc{gtp5g,
+%   title  = {{gtp5g} -- Linux Kernel Module for 5G GTP-U},
+%   author = {{free5gc Community}},
+%   year   = {2023},
+%   url    = {https://github.com/free5gc/gtp5g},
+%   note   = {Version 0.8.5}
+% }
+%
+% @misc{prometheus,
+%   title  = {{Prometheus} -- Monitoring System and Time Series Database},
+%   author = {{Prometheus Authors}},
+%   year   = {2024},
+%   url    = {https://prometheus.io}
+% }
+%
+% @misc{towards5gs_helm,
+%   title  = {{towards5gs-helm} -- Helm Charts for Free5GC and UERANSIM},
+%   author = {Abderaouf Khichane and others},
+%   year   = {2023},
+%   url    = {https://github.com/Orange-OpenSource/towards5gs-helm}
+% }
+%
+% @techreport{3gpp_ts23501,
+%   title       = {{System Architecture for the 5G System (5GS)}},
+%   institution = {3GPP},
+%   number      = {TS 23.501},
+%   year        = {2023},
+%   type        = {Technical Specification}
+% }
+%
+% @techreport{3gpp_ts29244,
+%   title       = {{Interface between the Control Plane and the User Plane Nodes}},
+%   institution = {3GPP},
+%   number      = {TS 29.244},
+%   year        = {2022},
+%   type        = {Technical Specification}
+% }

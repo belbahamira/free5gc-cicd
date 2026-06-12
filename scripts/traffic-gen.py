@@ -54,7 +54,7 @@ def run_ping(pod, duration, pps, size):
     setup_route(pod)
     start = time.time()
     cmd = (f"ip route add {TARGET_IP}/32 dev uesimtun0 2>/dev/null || true && "
-           f"ping {TARGET_IP} -c {count} -s {size} -i {interval} -W 2")
+           f"ping -I uesimtun0 {TARGET_IP} -c {count} -s {size} -i {interval} -W 2")
     r = kubectl("exec","-n",NAMESPACE,pod,"--","sh","-c",cmd)
     elapsed = time.time() - start
     return parse_ping(pod, r.stdout, elapsed)
