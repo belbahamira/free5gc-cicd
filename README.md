@@ -155,15 +155,4 @@ free5gc-cicd/
 └── results/                  # CSV des scénarios
 ```
 
-## Scaling KEDA
-- **SMF** : threshold=4 sessions PDU → 1 replica par 4 sessions
-- **UPF** : threshold=400 kbps throughput + wake-up event-driven + CPU 80%
-- **UPF minReplicas=1** pendant les tests (pas de scale-to-zero)
-- **cooldownPeriod=30s** pour UPF
 
-## Résultats observés
-| Scénario | UEs | UPF max | SMF max | BW max    | CPU SMF |
-|----------|-----|---------|---------|-----------|---------|
-| 4 UEs    | 4   | 4       | 1       | ~850 kbps | ~3mc    |
-| 10 UEs   | 10  | 4       | 2       | ~3 Mbps   | ~10mc   |
-| 20 UEs   | 20  | 4       | 3-5     | ~3 Mbps   | ~65mc   |
